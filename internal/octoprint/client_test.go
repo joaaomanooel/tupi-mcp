@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -41,22 +45,22 @@ func TestApprovedReads(t *testing.T) {
 }
 
 func TestConfigurationValidation(t *testing.T) {
-	for _, base := range []string{"", "localhost", "ftp://localhost", "http://", "http://user:pass@localhost", "http://localhost?x=1", "http://localhost#fragment", "http://localhost?", "http://localhost/#"} {
+	for _, base := range []string{"", "localhost", "ftp://127.0.0.1", "http://", "http://user:pass@127.0.0.1", "http://127.0.0.1?x=1", "http://127.0.0.1#fragment", "http://127.0.0.1?", "http://127.0.0.1/#"} {
 		t.Run(base, func(t *testing.T) {
 			_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128)
 			assertKind(t, err, ErrorConfig)
 		})
 	}
 	for _, key := range []string{"", "  "} {
-		_, err := NewClient("http://localhost", key, &http.Client{Timeout: time.Second}, 128)
+		_, err := NewClient("http://127.0.0.1", key, &http.Client{Timeout: time.Second}, 128)
 		assertKind(t, err, ErrorConfig)
 	}
 	for _, transport := range []*http.Client{nil, {}, {Timeout: -time.Second}} {
-		_, err := NewClient("http://localhost", "test-secret", transport, 128)
+		_, err := NewClient("http://127.0.0.1", "test-secret", transport, 128)
 		assertKind(t, err, ErrorConfig)
 	}
 	for _, cap := range []int64{0, -1} {
-		_, err := NewClient("http://localhost", "test-secret", &http.Client{Timeout: time.Second}, cap)
+		_, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second}, cap)
 		assertKind(t, err, ErrorConfig)
 	}
 }
@@ -196,8 +200,216 @@ func TestCredentialReflectionIsRejected(t *testing.T) {
 		if result != nil || err == nil {
 			t.Fatal("reflected credential was returned")
 		}
+		assertKind(t, err, ErrorSensitiveResponse)
 		if strings.Contains(err.Error(), "test-secret") {
 			t.Error("credential in error")
+		}
+	}
+}
+
+func TestBaseURLTransportPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		base    string
+		allowed bool
+	}{
+		{"http://127.0.0.1", true},
+		{"http://127.42.0.1:5000/octoprint", true},
+		{"http://[::1]:5000", true},
+		{"http://[::ffff:127.0.0.1]", true},
+		{"http://localhost", false},
+		{"http://localhost.", false},
+		{"http://octoprint.example", false},
+		{"http://192.0.2.10:5000", false},
+		{"http://0.0.0.0", false},
+		{"http://[::]", false},
+		{"http://[2001:db8::1]", false},
+		{"http://127.1", false},
+		{"http://2130706433", false},
+		{"http://0177.0.0.1", false},
+		{"http://[::1%25lo0]", false},
+		{"https://octoprint.example:5000/octoprint", true},
+		{"https://192.0.2.10", true},
+		{"https://[2001:db8::1]", true},
+	} {
+		t.Run(tc.base, func(t *testing.T) {
+			var requests atomic.Int32
+			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			})
+			client, err := NewClient(tc.base, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128)
+			if tc.allowed {
+				if err != nil || client == nil {
+					t.Fatalf("allowed URL rejected: %v", err)
+				}
+				if _, err := client.Connection(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if requests.Load() != 1 {
+					t.Fatal("allowed URL did not send one request")
+				}
+				return
+			}
+			if client != nil {
+				_, _ = client.Connection(context.Background())
+				t.Error("rejected URL created a client")
+			}
+			if requests.Load() != 0 {
+				t.Error("rejected URL sent a request")
+			}
+			assertKind(t, err, ErrorConfig)
+		})
+	}
+}
+
+func TestHTTPSRead(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || r.Method != http.MethodGet || r.URL.Path != "/api/connection" || r.Header.Get("X-Api-Key") != "test-secret" {
+			t.Error("unexpected HTTPS request")
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	defer server.Close()
+	httpClient := server.Client()
+	httpClient.Timeout = time.Second
+	client, err := NewClient(server.URL, "test-secret", httpClient, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Connection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPStatusBodyAllowsConnectionReuse(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, "temporarily unavailable")
+			return
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	defer server.Close()
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Job(context.Background())
+	assertKind(t, err, ErrorHTTPStatus)
+	var reused bool
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}
+	ctx := httptrace.WithClientTrace(context.Background(), trace)
+	if _, err := client.Job(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !reused || requests.Load() != 2 {
+		t.Fatal("small error response prevented connection reuse")
+	}
+}
+
+func TestHTTPStatusBodyDrainIsBoundedAndBestEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		reader   io.Reader
+		wantRead int
+	}{
+		{"small", strings.NewReader("upstream detail"), 15},
+		{"large", strings.NewReader(strings.Repeat("x", 1<<20)), 32},
+		{"read failure", io.MultiReader(strings.NewReader("detail"), iotest.ErrReader(errors.New("test-secret upstream detail"))), 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &trackedResponseBody{Reader: tc.reader}
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: body}, nil
+			})
+			client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 32)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.Job(context.Background())
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			errors.As(err, &typed)
+			if result != nil || typed.StatusCode != http.StatusServiceUnavailable || errors.Unwrap(err) != nil || err.Error() != "octoprint: http_status" {
+				t.Fatalf("unsafe status result: %v", err)
+			}
+			if body.bytesRead != tc.wantRead || !body.closed {
+				t.Fatalf("read %d bytes, want %d; closed: %t", body.bytesRead, tc.wantRead, body.closed)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type trackedResponseBody struct {
+	io.Reader
+	bytesRead int
+	closed    bool
+}
+
+func (b *trackedResponseBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.bytesRead += n
+	return n, err
+}
+
+func (b *trackedResponseBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestConcurrentApprovedReadsShareClient(t *testing.T) {
+	const readsPerEndpoint = 8
+	endpoints := []string{"connection", "printer", "job", "files"}
+	var requests [4]atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+			t.Error("unexpected request credentials or query")
+		}
+		for index, endpoint := range endpoints {
+			if r.URL.Path == "/api/"+endpoint {
+				requests[index].Add(1)
+				fmt.Fprint(w, `{}`)
+				return
+			}
+		}
+		t.Errorf("unexpected endpoint: %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for _, endpoint := range endpoints {
+		for range readsPerEndpoint {
+			workers.Go(func() {
+				<-start
+				response, err := readEndpoint(client, endpoint, ctx)
+				if err != nil || response == nil {
+					t.Errorf("concurrent %s read failed: %v", endpoint, err)
+				}
+			})
+		}
+	}
+	close(start)
+	workers.Wait()
+	for index, endpoint := range endpoints {
+		if got := requests[index].Load(); got != readsPerEndpoint {
+			t.Errorf("%s received %d requests, want %d", endpoint, got, readsPerEndpoint)
 		}
 	}
 }
@@ -209,7 +421,7 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func TestTransportErrorsAreRedacted(t *testing.T) {
-	client, err := NewClient("http://localhost", "test-secret", &http.Client{Timeout: time.Second, Transport: failingTransport{}}, 128)
+	client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: failingTransport{}}, 128)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +466,7 @@ func TestValidJSONForms(t *testing.T) {
 }
 
 func TestCredentialCannotAppearInBaseURL(t *testing.T) {
-	for _, base := range []string{"http://localhost/test-secret", "http://test-secret.example", "http://localhost/test-%73ecret"} {
+	for _, base := range []string{"http://127.0.0.1/test-secret", "https://test-secret.example", "http://127.0.0.1/test-%73ecret"} {
 		_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128)
 		assertKind(t, err, ErrorConfig)
 		if strings.Contains(err.Error(), "test-secret") {
@@ -266,7 +478,7 @@ func TestCredentialCannotAppearInBaseURL(t *testing.T) {
 func TestCancellationDuringClosedBodyRead(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	client, err := NewClient("http://localhost", "test-secret", &http.Client{
+	client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{
 		Timeout:   time.Second,
 		Transport: closedBodyTransport{cancel: cancel},
 	}, 128)

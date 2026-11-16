@@ -51,6 +51,12 @@ func NewClient(baseURL, apiKey string, httpClient *http.Client, maxBodyBytes int
 	if err != nil || base == nil || (base.Scheme != "http" && base.Scheme != "https") || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || strings.Contains(baseURL, "#") || base.Opaque != "" {
 		return nil, &Error{Kind: ErrorConfig}
 	}
+	if base.Scheme == "http" {
+		address := net.ParseIP(base.Hostname())
+		if address == nil || !address.IsLoopback() {
+			return nil, &Error{Kind: ErrorConfig}
+		}
+	}
 	if apiKey == "" || apiKey != strings.TrimSpace(apiKey) || httpClient == nil || httpClient.Timeout <= 0 || maxBodyBytes <= 0 {
 		return nil, &Error{Kind: ErrorConfig}
 	}
@@ -93,6 +99,7 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes))
 		return nil, &Error{Kind: ErrorHTTPStatus, StatusCode: response.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, c.maxBodyBytes))
