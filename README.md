@@ -1,13 +1,26 @@
 # MCP OctoPrint
 
-A small Go service intended to expose read-only OctoPrint information to MCP clients. Initial development uses a deterministic HTTP mock; Raspberry Pi deployment and physical printer validation are later steps.
+Serviço em Go em desenvolvimento para expor informações do OctoPrint em modo somente leitura a clientes MCP.
 
-## Status
+## Estado atual
 
-Implementation has not started. Transport authentication, final MCP tool schemas, resource limits, project license, and client compatibility remain pending decisions. The first code increment is limited to a read-only OctoPrint client and its mock-based tests.
+O cliente HTTP interno de leitura do OctoPrint está implementado e commitado. Seus quatro métodos fazem requisições GET aos endpoints aprovados, validam JSON e os limites de resposta e protegem a chave de API.
 
-## Scope boundary
+Ainda não estão implementados: ferramentas e transporte MCP, autenticação e autorização MCP, mapeamento das respostas, inicialização e carregamento da configuração, serviço mock, implantação e validação com hardware. A licença do projeto permanece pendente. O MVP não está concluído.
 
-The remote service is limited to reading connection and printer status, temperatures, current job, and available files. It must not upload files, start or control prints, set temperatures, move axes, or send arbitrary G-code. CAD and slicing run locally on a development computer in a separate increment.
+As verificações automatizadas atuais usam mocks locais com `httptest`. Esses resultados não comprovam compatibilidade com uma instância real do OctoPrint nem com Codex ou OpenCode.
 
-See the canonical product and technical documentation in the workspace wiki.
+## Desenvolvimento
+
+Comandos verificados para o estado atual do projeto:
+
+```sh
+go test ./...
+go vet ./...
+```
+
+## Limites do escopo
+
+O serviço remoto se limita à leitura de conexão e estado da impressora, temperaturas, trabalho atual e arquivos disponíveis. Não deve enviar arquivos, iniciar ou controlar impressões, definir temperaturas, mover eixos ou enviar G-code arbitrário. CAD e fatiamento são executados localmente em um computador de desenvolvimento, em um incremento separado.
+
+Consulte a documentação canônica de produto e técnica na wiki do workspace.
