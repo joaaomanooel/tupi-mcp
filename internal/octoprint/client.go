@@ -75,12 +75,12 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	target.RawPath = ""
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return nil, safeTransportError(err)
+		return nil, safeTransportError(ctx, err)
 	}
 	request.Header.Set("X-Api-Key", c.apiKey)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, safeTransportError(err)
+		return nil, safeTransportError(ctx, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -88,7 +88,7 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, c.maxBodyBytes))
 	if err != nil {
-		return nil, safeTransportError(err)
+		return nil, safeTransportError(ctx, err)
 	}
 	var extra [1]byte
 	n, err := io.ReadFull(response.Body, extra[:])
@@ -96,7 +96,7 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 		return nil, &Error{Kind: ErrorResponseTooLarge}
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, safeTransportError(err)
+		return nil, safeTransportError(ctx, err)
 	}
 	if !json.Valid(body) {
 		return nil, &Error{Kind: ErrorInvalidJSON}
@@ -121,7 +121,10 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	return body, nil
 }
 
-func safeTransportError(err error) error {
+func safeTransportError(ctx context.Context, err error) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = contextErr
+	}
 	if errors.Is(err, context.Canceled) {
 		return &Error{Kind: ErrorCanceled, cause: context.Canceled}
 	}

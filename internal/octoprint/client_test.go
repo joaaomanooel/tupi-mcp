@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -260,3 +261,38 @@ func TestCredentialCannotAppearInBaseURL(t *testing.T) {
 		}
 	}
 }
+
+func TestCancellationDuringClosedBodyRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, err := NewClient("http://localhost", "test-secret", &http.Client{
+		Timeout:   time.Second,
+		Transport: closedBodyTransport{cancel: cancel},
+	}, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := client.Job(ctx)
+	assertKind(t, err, ErrorCanceled)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("missing cancellation cause: %v", err)
+	}
+	if body != nil {
+		t.Error("canceled read returned a body")
+	}
+}
+
+type closedBodyTransport struct{ cancel context.CancelFunc }
+
+func (t closedBodyTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: closedResponseBody{cancel: t.cancel}}, nil
+}
+
+type closedResponseBody struct{ cancel context.CancelFunc }
+
+func (b closedResponseBody) Read([]byte) (int, error) {
+	b.cancel()
+	return 0, net.ErrClosed
+}
+
+func (closedResponseBody) Close() error { return nil }
