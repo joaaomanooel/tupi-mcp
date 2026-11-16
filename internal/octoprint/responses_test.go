@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -89,6 +90,50 @@ func TestPrintingJobResponse(t *testing.T) {
 	progress := response.Progress
 	if progress.Completion == nil || *progress.Completion != 42.5 || progress.FilePosition == nil || *progress.FilePosition != 12345 || progress.PrintTime == nil || *progress.PrintTime != 500 || progress.PrintTimeLeft == nil || *progress.PrintTimeLeft != 688 || progress.PrintTimeLeftOrigin == nil || *progress.PrintTimeLeftOrigin != "analysis" {
 		t.Fatalf("unexpected progress: %+v", progress)
+	}
+}
+
+func TestNullableTemperatureSensors(t *testing.T) {
+	client := responseClient(t, `{"temperature":{"bed":null,"tool0":{"actual":0,"target":0,"offset":0},"tool1":{}}}`)
+
+	response, err := client.Printer(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	bed, bedPresent := response.Temperature["bed"]
+	if !bedPresent || bed != nil {
+		t.Fatalf("null sensor was not preserved: %+v", response.Temperature)
+	}
+	if _, chamberPresent := response.Temperature["chamber"]; chamberPresent {
+		t.Fatalf("absent sensor was fabricated: %+v", response.Temperature)
+	}
+	tool := response.Temperature["tool0"]
+	if tool == nil || tool.Actual == nil || *tool.Actual != 0 || tool.Target == nil || *tool.Target != 0 || tool.Offset == nil || *tool.Offset != 0 {
+		t.Fatalf("zero readings were lost: %+v", tool)
+	}
+	emptyTool := response.Temperature["tool1"]
+	if emptyTool == nil || emptyTool.Actual != nil || emptyTool.Target != nil || emptyTool.Offset != nil {
+		t.Fatalf("explicit empty sensor was not preserved: %+v", emptyTool)
+	}
+}
+
+func TestReadEndpointRejectsUnsupportedNames(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 8192)
+
+	response, err := readEndpoint(client, "printerr", context.Background())
+
+	if response != nil || err == nil {
+		t.Fatalf("unsupported endpoint was accepted: %+v %v", response, err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("unsupported endpoint sent a request")
 	}
 }
 
@@ -276,14 +321,17 @@ func responseClient(t *testing.T, body string) *Client {
 }
 
 func readEndpoint(client *Client, endpoint string, ctx context.Context) (any, error) {
-	switch endpoint {
-	case "connection":
+	if endpoint == "connection" {
 		return client.Connection(ctx)
-	case "printer":
+	}
+	if endpoint == "printer" {
 		return client.Printer(ctx)
-	case "job":
+	}
+	if endpoint == "job" {
 		return client.Job(ctx)
-	default:
+	}
+	if endpoint == "files" {
 		return client.Files(ctx)
 	}
+	return nil, fmt.Errorf("unsupported test endpoint: %q", endpoint)
 }

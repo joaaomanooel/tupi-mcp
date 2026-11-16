@@ -36,7 +36,7 @@ type PrinterFlags struct {
 	ClosedOrError *bool `json:"closedOrError"`
 }
 
-type Temperatures map[string]Temperature
+type Temperatures map[string]*Temperature
 
 type Temperature struct {
 	Actual *float64 `json:"actual"`
@@ -58,7 +58,7 @@ func (t *Temperatures) UnmarshalJSON(data []byte) error {
 		if !isTemperatureSource(name) {
 			continue
 		}
-		var temperature Temperature
+		var temperature *Temperature
 		if err := json.Unmarshal(entry, &temperature); err != nil {
 			return err
 		}
