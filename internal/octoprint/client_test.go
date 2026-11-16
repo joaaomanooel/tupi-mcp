@@ -30,10 +30,11 @@ func TestApprovedReads(t *testing.T) {
 			}))
 			defer server.Close()
 			client := newTestClient(t, server.URL, 128)
-			methods := map[string]func(context.Context) ([]byte, error){"connection": client.Connection, "printer": client.Printer, "job": client.Job, "files": client.Files}
-			body, err := methods[endpoint](context.Background())
-			if err != nil || string(body) != `{"ready":true}` {
-				t.Fatalf("unexpected result: %q %v", body, err)
+
+			body, err := readEndpoint(client, endpoint, context.Background())
+
+			if err != nil || body == nil {
+				t.Fatalf("unexpected result: %+v %v", body, err)
 			}
 		})
 	}
@@ -244,7 +245,7 @@ func TestCancellationWhileReadingBody(t *testing.T) {
 func TestValidJSONForms(t *testing.T) {
 	for _, body := range []string{`[null,true,123,"value"]`, `123e10000`, ` {"ok":true} `} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
-		result, err := newTestClient(t, server.URL, 128).Files(context.Background())
+		result, err := newTestClient(t, server.URL, 128).get(context.Background(), "/api/files")
 		server.Close()
 		if err != nil || string(result) != body {
 			t.Fatalf("valid JSON rejected: %v", err)

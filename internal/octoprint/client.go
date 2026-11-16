@@ -62,12 +62,21 @@ func NewClient(baseURL, apiKey string, httpClient *http.Client, maxBodyBytes int
 	return &Client{baseURL: *base, apiKey: apiKey, httpClient: transport, maxBodyBytes: maxBodyBytes}, nil
 }
 
-func (c *Client) Connection(ctx context.Context) ([]byte, error) {
-	return c.get(ctx, "/api/connection")
+func (c *Client) Connection(ctx context.Context) (*ConnectionResponse, error) {
+	return readResponse[ConnectionResponse](ctx, c, "/api/connection")
 }
-func (c *Client) Printer(ctx context.Context) ([]byte, error) { return c.get(ctx, "/api/printer") }
-func (c *Client) Job(ctx context.Context) ([]byte, error)     { return c.get(ctx, "/api/job") }
-func (c *Client) Files(ctx context.Context) ([]byte, error)   { return c.get(ctx, "/api/files") }
+
+func (c *Client) Printer(ctx context.Context) (*PrinterResponse, error) {
+	return readResponse[PrinterResponse](ctx, c, "/api/printer")
+}
+
+func (c *Client) Job(ctx context.Context) (*JobResponse, error) {
+	return readResponse[JobResponse](ctx, c, "/api/job")
+}
+
+func (c *Client) Files(ctx context.Context) (*FilesResponse, error) {
+	return readResponse[FilesResponse](ctx, c, "/api/files")
+}
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	target := c.baseURL
