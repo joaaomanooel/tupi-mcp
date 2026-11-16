@@ -296,3 +296,24 @@ func (b closedResponseBody) Read([]byte) (int, error) {
 }
 
 func (closedResponseBody) Close() error { return nil }
+
+func TestPaddedAPIKeyIsRejectedBeforeRequest(t *testing.T) {
+	for _, key := range []string{" test-secret ", " test-secret", "test-secret ", "\ttest-secret\t"} {
+		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				fmt.Fprint(w, `{}`)
+			}))
+			defer server.Close()
+			client, err := NewClient(server.URL, key, &http.Client{Timeout: time.Second}, 128)
+			assertKind(t, err, ErrorConfig)
+			if client != nil {
+				t.Error("invalid credential created a client")
+			}
+			if requests.Load() != 0 {
+				t.Error("invalid credential sent a request")
+			}
+		})
+	}
+}
