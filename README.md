@@ -1,6 +1,6 @@
-# MCP OctoPrint
+# Tupi MCP
 
-Serviço em Go em desenvolvimento para expor informações do OctoPrint em modo somente leitura a clientes MCP.
+O Tupi MCP, no repositório `tupi-mcp`, é um serviço em Go em desenvolvimento para expor informações do OctoPrint em modo somente leitura a clientes MCP.
 
 ## Estado atual
 
