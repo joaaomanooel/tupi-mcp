@@ -1,0 +1,7 @@
+.git
+.github
+.worktree
+*.log
+**/.env
+**/.env.*
+!**/.env.example
