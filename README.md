@@ -86,6 +86,14 @@ go test -race ./...
 go vet ./...
 ```
 
+## Releases
+
+Use tags estáveis no formato `vMAJOR.MINOR.PATCH`, como `v1.2.3`, apontadas para um commit de `main`. O CI valida essa relação, examina o histórico Git com Gitleaks em pull requests, pushes para `main`, tags e releases, e exige notas de release não vazias. Crie um draft release a partir da tag, gere as notas de versão no GitHub e revise o título, o resumo e as mudanças antes de publicar. A configuração em `.github/release.yml` organiza as notas por tipo de mudança.
+
+O push da tag valida o código e compila e escaneia as imagens `amd64`, `arm64` e `arm/v7`, sem publicá-las. O Gitleaks verifica o histórico completo e redige os valores encontrados dos logs. Somente publicar um release estável ou promover uma pré-release para estável inicia a publicação no GHCR. O workflow envia as imagens por digest, escaneia exatamente esses digests e cria o manifest multiarch com a tag exata do release, por exemplo `ghcr.io/joaaomanooel/tupi-mcp:v1.2.3`. Pushes para `main` executam CI e não publicam imagens. Não há tag `latest` nem tag de imagem baseada em SHA.
+
+Se a validação das notas falhar por um corpo vazio ou composto apenas por espaços, edite o corpo para o CI revalidar e retomar a publicação. Uma edição apenas no título não republica a imagem. As imagens por digest são enviadas ao GHCR antes dos scans; se um scan falhar, os digests intermediários podem permanecer no pacote sem a tag versionada e, se o pacote for público, podem ser baixados por digest. Em qualquer falha, confira o workflow antes de anunciar a imagem como disponível.
+
 ## Limites do escopo
 
 O serviço remoto se limita à leitura de conexão e estado da impressora, temperaturas, trabalho atual e arquivos disponíveis. Não deve enviar arquivos, iniciar ou controlar impressões, definir temperaturas, mover eixos ou enviar G-code arbitrário. As ferramentas MCP não expõem argumentos de escrita e o cliente HTTP só emite GET aprovados. CAD e fatiamento são executados localmente em um computador de desenvolvimento, em um incremento separado.

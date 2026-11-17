@@ -1,0 +1,20 @@
+changelog:
+  categories:
+    - title: Novidades
+      labels:
+        - feature
+        - enhancement
+    - title: Correções
+      labels:
+        - bug
+        - fix
+    - title: Segurança
+      labels:
+        - security
+    - title: Manutenção
+      labels:
+        - maintenance
+        - dependencies
+    - title: Outras mudanças
+      labels:
+        - "*"
