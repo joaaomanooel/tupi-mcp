@@ -7,6 +7,11 @@ on:
       - main
     tags:
       - 'v*'
+  release:
+    types:
+      - published
+      - edited
+      - released
 
 permissions:
   contents: read
@@ -14,18 +19,67 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      release_notes_retry: ${{ steps.release_notes_retry.outputs.retry }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Require release notes
+        if: github.event_name == 'release'
+        env:
+          RELEASE_NOTES: ${{ github.event.release.body }}
+        run: |
+          if [[ -z "$(printf '%s' "$RELEASE_NOTES" | tr -d '[:space:]')" ]]; then
+            printf 'Published releases must include release notes.\n' >&2
+            exit 1
+          fi
+      - name: Detect release notes repair
+        id: release_notes_retry
+        if: github.event_name == 'release' && github.event.action == 'edited'
+        env:
+          RELEASE_BODY_CHANGED: ${{ toJSON(github.event.changes.body) != 'null' }}
+          PREVIOUS_RELEASE_NOTES: ${{ github.event.changes.body.from }}
+        run: |
+          if [[ "$RELEASE_BODY_CHANGED" == 'true' ]] && [[ -z "$(printf '%s' "$PREVIOUS_RELEASE_NOTES" | tr -d '[:space:]')" ]]; then
+            printf 'retry=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'retry=false\n' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'Release tag must use vMAJOR.MINOR.PATCH: %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: go.mod
           cache: true
+      - name: Scan repository history for secrets
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          GOBIN="$RUNNER_TEMP/gitleaks" go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --no-banner --log-opts=--all
+      - name: Require release commit on main
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then
+            printf 'Release tag must point to a commit contained in main.\n' >&2
+            exit 1
+          fi
       - run: go test ./...
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   image:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +113,11 @@ jobs:
           grype-version: v0.102.0
 
   publish:
-    if: github.event_name == 'push'
+    if: >-
+      github.event_name == 'release' &&
+      (github.event.action == 'published' || github.event.action == 'released' ||
+      needs.verify.outputs.release_notes_retry == 'true') &&
+      !github.event.release.prerelease
     needs: verify
     runs-on: ubuntu-latest
     permissions:
@@ -79,114 +137,76 @@ jobs:
         with:
           images: ghcr.io/joaaomanooel/tupi-mcp
           tags: |
-            type=sha,format=long
             type=ref,event=tag
-      - name: Build amd64 candidate
+      - name: Build amd64 image by digest
+        id: build_amd64
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           platforms: linux/amd64
-          load: true
-          push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Scan amd64 candidate
+          outputs: type=image,name=ghcr.io/joaaomanooel/tupi-mcp,push-by-digest=true,name-canonical=true,push=true
+      - name: Scan amd64 image
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        env:
+          GRYPE_PLATFORM: linux/amd64
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+          image: registry:ghcr.io/joaaomanooel/tupi-mcp@${{ steps.build_amd64.outputs.digest }}
           output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
-      - name: Push scanned amd64 candidate
-        id: push_amd64
-        env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
-        run: |
-          push_output="$(docker push "$CANDIDATE_IMAGE")"
-          printf '%s\n' "$push_output"
-          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            printf 'Unexpected push digest: %s\n' "$digest" >&2
-            exit 1
-          fi
-          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
-      - name: Build arm64 candidate
+      - name: Build arm64 image by digest
+        id: build_arm64
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           platforms: linux/arm64
-          load: true
-          push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Scan arm64 candidate
+          outputs: type=image,name=ghcr.io/joaaomanooel/tupi-mcp,push-by-digest=true,name-canonical=true,push=true
+      - name: Scan arm64 image
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        env:
+          GRYPE_PLATFORM: linux/arm64
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          image: registry:ghcr.io/joaaomanooel/tupi-mcp@${{ steps.build_arm64.outputs.digest }}
           output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
-      - name: Push scanned arm64 candidate
-        id: push_arm64
-        env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
-        run: |
-          push_output="$(docker push "$CANDIDATE_IMAGE")"
-          printf '%s\n' "$push_output"
-          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            printf 'Unexpected push digest: %s\n' "$digest" >&2
-            exit 1
-          fi
-          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
-      - name: Build armv7 candidate
+      - name: Build armv7 image by digest
+        id: build_armv7
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           platforms: linux/arm/v7
-          load: true
-          push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Scan armv7 candidate
+          outputs: type=image,name=ghcr.io/joaaomanooel/tupi-mcp,push-by-digest=true,name-canonical=true,push=true
+      - name: Scan armv7 image
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        env:
+          GRYPE_PLATFORM: linux/arm/v7
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
+          image: registry:ghcr.io/joaaomanooel/tupi-mcp@${{ steps.build_armv7.outputs.digest }}
           output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
-      - name: Push scanned armv7 candidate
-        id: push_armv7
+      - name: Publish multiarch manifest from scanned digests
         env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
+          IMAGE_NAME: ghcr.io/joaaomanooel/tupi-mcp
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          AMD64_DIGEST: ${{ steps.build_amd64.outputs.digest }}
+          ARM64_DIGEST: ${{ steps.build_arm64.outputs.digest }}
+          ARMV7_DIGEST: ${{ steps.build_armv7.outputs.digest }}
         run: |
-          push_output="$(docker push "$CANDIDATE_IMAGE")"
-          printf '%s\n' "$push_output"
-          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
-          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            printf 'Unexpected push digest: %s\n' "$digest" >&2
-            exit 1
-          fi
-          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
-      - name: Publish manifest from scanned candidates
-        env:
-          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
-          AMD64_IMAGE: ${{ steps.push_amd64.outputs.image }}
-          ARM64_IMAGE: ${{ steps.push_arm64.outputs.image }}
-          ARMV7_IMAGE: ${{ steps.push_armv7.outputs.image }}
-        run: |
-          args=()
-          while IFS= read -r tag; do
-            args+=(--tag "$tag")
-          done <<< "$IMAGE_TAGS"
-          docker buildx imagetools create "${args[@]}" \
-            "$AMD64_IMAGE" \
-            "$ARM64_IMAGE" \
-            "$ARMV7_IMAGE"
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:$RELEASE_TAG" \
+            "$IMAGE_NAME@$AMD64_DIGEST" \
+            "$IMAGE_NAME@$ARM64_DIGEST" \
+            "$IMAGE_NAME@$ARMV7_DIGEST"
       - name: Report published manifest
         env:
-          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
-        run: docker buildx imagetools inspect "${IMAGE_TAGS%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
+          IMAGE_NAME: ghcr.io/joaaomanooel/tupi-mcp
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: docker buildx imagetools inspect "$IMAGE_NAME:$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
