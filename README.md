@@ -17,7 +17,7 @@ O servidor MCP usa o SDK oficial em Go (`github.com/modelcontextprotocol/go-sdk`
 
 Os esquemas de saída declaram como opcionais todos os campos que podem faltar nas respostas do OctoPrint. Erros de ferramenta retornam uma mensagem segura, sem chave de API, token MCP, corpo de resposta, endereço de rede ou caminho interno, e não encerram o servidor.
 
-A URL base do OctoPrint aceita HTTPS. HTTP é permitido apenas com IP literal de loopback, como `http://127.0.0.1:5000` ou `http://[::1]:5000`; nomes como `localhost` não são aceitos em HTTP. A validação não faz resolução DNS. Respostas de erro são descartadas até o limite configurado de bytes, preservando o erro seguro de status HTTP.
+A URL base do OctoPrint aceita HTTPS. HTTP é permitido com IP literal de loopback, como `http://127.0.0.1:5000` ou `http://[::1]:5000`. Para conectar contêineres por uma rede Docker privada, `TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP=true` também permite HTTP para o host configurado. Use essa opção somente numa rede privada isolada: o tráfego não é criptografado e a chave da API do OctoPrint pode ser observada por outros participantes da rede. A validação não faz resolução DNS. Respostas de erro são descartadas até o limite configurado de bytes, preservando o erro seguro de status HTTP.
 
 Ainda não estão implementados: implantação, configuração do Raspberry Pi, serviço mock de longa duração, validação com hardware e a decisão final de autenticação e transporte no ADR. A licença do projeto permanece pendente. O MVP não está concluído.
 
@@ -52,6 +52,7 @@ O cliente MCP se conecta a `http://127.0.0.1:8080/mcp` e envia `Authorization: B
 | `TUPI_MCP_MAX_REQUEST_BODY_BYTES` | não | `65536` | Limite do corpo das requisições MCP |
 | `TUPI_OCTOPRINT_BASE_URL` | sim | — | URL base do OctoPrint |
 | `TUPI_OCTOPRINT_API_KEY` | sim | — | Chave da API do OctoPrint |
+| `TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP` | não | `false` | Permite HTTP fora de loopback; use somente em uma rede Docker privada isolada |
 | `TUPI_OCTOPRINT_TIMEOUT` | não | `10s` | Timeout das requisições ao OctoPrint, como `10s` |
 | `TUPI_OCTOPRINT_MAX_RESPONSE_BYTES` | não | `1048576` | Limite de bytes das respostas do OctoPrint |
 

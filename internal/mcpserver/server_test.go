@@ -176,7 +176,7 @@ func (t *bearerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 func newIntegrationServer(t *testing.T) (*printerMock, testServer, *mcp.ClientSession) {
 	t.Helper()
 	mock := newPrinterMock(t)
-	client, err := octoprint.NewClient(mock.server.URL, testAPIKey, &http.Client{Timeout: 2 * time.Second}, 4096)
+	client, err := octoprint.NewClient(mock.server.URL, testAPIKey, &http.Client{Timeout: 2 * time.Second}, 4096, false)
 	if err != nil {
 		t.Fatalf("octoprint client: %v", err)
 	}

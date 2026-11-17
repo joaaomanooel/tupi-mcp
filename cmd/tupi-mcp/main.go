@@ -45,6 +45,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		settings.OctoPrintAPIKey,
 		&http.Client{Timeout: settings.OctoPrintTimeout},
 		settings.OctoPrintMaxBodyBytes,
+		settings.OctoPrintAllowInsecureHTTP,
 	)
 	if err != nil {
 		return err

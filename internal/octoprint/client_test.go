@@ -47,20 +47,20 @@ func TestApprovedReads(t *testing.T) {
 func TestConfigurationValidation(t *testing.T) {
 	for _, base := range []string{"", "localhost", "ftp://127.0.0.1", "http://", "http://user:pass@127.0.0.1", "http://127.0.0.1?x=1", "http://127.0.0.1#fragment", "http://127.0.0.1?", "http://127.0.0.1/#"} {
 		t.Run(base, func(t *testing.T) {
-			_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128)
+			_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128, false)
 			assertKind(t, err, ErrorConfig)
 		})
 	}
 	for _, key := range []string{"", "  "} {
-		_, err := NewClient("http://127.0.0.1", key, &http.Client{Timeout: time.Second}, 128)
+		_, err := NewClient("http://127.0.0.1", key, &http.Client{Timeout: time.Second}, 128, false)
 		assertKind(t, err, ErrorConfig)
 	}
 	for _, transport := range []*http.Client{nil, {}, {Timeout: -time.Second}} {
-		_, err := NewClient("http://127.0.0.1", "test-secret", transport, 128)
+		_, err := NewClient("http://127.0.0.1", "test-secret", transport, 128, false)
 		assertKind(t, err, ErrorConfig)
 	}
 	for _, cap := range []int64{0, -1} {
-		_, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second}, cap)
+		_, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second}, cap, false)
 		assertKind(t, err, ErrorConfig)
 	}
 }
@@ -124,7 +124,7 @@ func TestRedirectDoesNotForwardCredentials(t *testing.T) {
 func TestCancellationAndTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer server.Close()
-	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: 30 * time.Millisecond}, 128)
+	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: 30 * time.Millisecond}, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestBasePathAndClientIsolation(t *testing.T) {
 	}))
 	defer server.Close()
 	transport := &http.Client{Timeout: time.Second}
-	client, err := NewClient(server.URL+"/octoprint/", "test-secret", transport, 128)
+	client, err := NewClient(server.URL+"/octoprint/", "test-secret", transport, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestBasePathAndClientIsolation(t *testing.T) {
 
 func newTestClient(t *testing.T, base string, cap int64) *Client {
 	t.Helper()
-	client, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, cap)
+	client, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, cap, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestBaseURLTransportPolicy(t *testing.T) {
 				requests.Add(1)
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 			})
-			client, err := NewClient(tc.base, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128)
+			client, err := NewClient(tc.base, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128, false)
 			if tc.allowed {
 				if err != nil || client == nil {
 					t.Fatalf("allowed URL rejected: %v", err)
@@ -272,7 +272,7 @@ func TestHTTPSRead(t *testing.T) {
 	defer server.Close()
 	httpClient := server.Client()
 	httpClient.Timeout = time.Second
-	client, err := NewClient(server.URL, "test-secret", httpClient, 128)
+	client, err := NewClient(server.URL, "test-secret", httpClient, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestHTTPStatusBodyAllowsConnectionReuse(t *testing.T) {
 	defer server.Close()
 	transport := &http.Transport{}
 	defer transport.CloseIdleConnections()
-	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128)
+	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestHTTPStatusBodyDrainIsBoundedAndBestEffort(t *testing.T) {
 			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: body}, nil
 			})
-			client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 32)
+			client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: transport}, 32, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -421,7 +421,7 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func TestTransportErrorsAreRedacted(t *testing.T) {
-	client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: failingTransport{}}, 128)
+	client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{Timeout: time.Second, Transport: failingTransport{}}, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +467,7 @@ func TestValidJSONForms(t *testing.T) {
 
 func TestCredentialCannotAppearInBaseURL(t *testing.T) {
 	for _, base := range []string{"http://127.0.0.1/test-secret", "https://test-secret.example", "http://127.0.0.1/test-%73ecret"} {
-		_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128)
+		_, err := NewClient(base, "test-secret", &http.Client{Timeout: time.Second}, 128, false)
 		assertKind(t, err, ErrorConfig)
 		if strings.Contains(err.Error(), "test-secret") {
 			t.Error("credential in configuration error")
@@ -481,7 +481,7 @@ func TestCancellationDuringClosedBodyRead(t *testing.T) {
 	client, err := NewClient("http://127.0.0.1", "test-secret", &http.Client{
 		Timeout:   time.Second,
 		Transport: closedBodyTransport{cancel: cancel},
-	}, 128)
+	}, 128, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestPaddedAPIKeyIsRejectedBeforeRequest(t *testing.T) {
 				fmt.Fprint(w, `{}`)
 			}))
 			defer server.Close()
-			client, err := NewClient(server.URL, key, &http.Client{Timeout: time.Second}, 128)
+			client, err := NewClient(server.URL, key, &http.Client{Timeout: time.Second}, 128, false)
 			assertKind(t, err, ErrorConfig)
 			if client != nil {
 				t.Error("invalid credential created a client")

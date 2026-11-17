@@ -46,14 +46,14 @@ type Client struct {
 	maxBodyBytes int64
 }
 
-func NewClient(baseURL, apiKey string, httpClient *http.Client, maxBodyBytes int64) (*Client, error) {
+func NewClient(baseURL, apiKey string, httpClient *http.Client, maxBodyBytes int64, allowInsecureHTTP bool) (*Client, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil || base == nil || (base.Scheme != "http" && base.Scheme != "https") || base.Hostname() == "" || base.User != nil || base.RawQuery != "" || base.ForceQuery || strings.Contains(baseURL, "#") || base.Opaque != "" {
 		return nil, &Error{Kind: ErrorConfig}
 	}
 	if base.Scheme == "http" {
 		address := net.ParseIP(base.Hostname())
-		if address == nil || !address.IsLoopback() {
+		if (address == nil || !address.IsLoopback()) && !allowInsecureHTTP {
 			return nil, &Error{Kind: ErrorConfig}
 		}
 	}

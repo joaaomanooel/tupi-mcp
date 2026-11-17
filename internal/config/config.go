@@ -11,16 +11,17 @@ import (
 )
 
 const (
-	TokenVariable                = "TUPI_MCP_TOKEN"
-	ListenAddressVariable        = "TUPI_MCP_LISTEN_ADDRESS"
-	AllowNonLoopbackVariable     = "TUPI_MCP_ALLOW_NON_LOOPBACK"
-	AllowedHostsVariable         = "TUPI_MCP_ALLOWED_HOSTS"
-	AllowedOriginsVariable       = "TUPI_MCP_ALLOWED_ORIGINS"
-	MaxRequestBytesVariable      = "TUPI_MCP_MAX_REQUEST_BODY_BYTES"
-	OctoPrintURLVariable         = "TUPI_OCTOPRINT_BASE_URL"
-	OctoPrintAPIKeyVariable      = "TUPI_OCTOPRINT_API_KEY"
-	OctoPrintTimeoutVariable     = "TUPI_OCTOPRINT_TIMEOUT"
-	OctoPrintMaxResponseVariable = "TUPI_OCTOPRINT_MAX_RESPONSE_BYTES"
+	TokenVariable                      = "TUPI_MCP_TOKEN"
+	ListenAddressVariable              = "TUPI_MCP_LISTEN_ADDRESS"
+	AllowNonLoopbackVariable           = "TUPI_MCP_ALLOW_NON_LOOPBACK"
+	AllowedHostsVariable               = "TUPI_MCP_ALLOWED_HOSTS"
+	AllowedOriginsVariable             = "TUPI_MCP_ALLOWED_ORIGINS"
+	MaxRequestBytesVariable            = "TUPI_MCP_MAX_REQUEST_BODY_BYTES"
+	OctoPrintURLVariable               = "TUPI_OCTOPRINT_BASE_URL"
+	OctoPrintAPIKeyVariable            = "TUPI_OCTOPRINT_API_KEY"
+	OctoPrintAllowInsecureHTTPVariable = "TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP"
+	OctoPrintTimeoutVariable           = "TUPI_OCTOPRINT_TIMEOUT"
+	OctoPrintMaxResponseVariable       = "TUPI_OCTOPRINT_MAX_RESPONSE_BYTES"
 
 	DefaultListenAddress        = "127.0.0.1:8080"
 	DefaultMaxRequestBodyBytes  = 64 << 10
@@ -37,15 +38,16 @@ func (e *Error) Error() string {
 }
 
 type Config struct {
-	MCPToken              string
-	ListenAddress         string
-	AllowedHosts          []string
-	AllowedOrigins        []string
-	MaxRequestBodyBytes   int64
-	OctoPrintBaseURL      string
-	OctoPrintAPIKey       string
-	OctoPrintTimeout      time.Duration
-	OctoPrintMaxBodyBytes int64
+	MCPToken                   string
+	ListenAddress              string
+	AllowedHosts               []string
+	AllowedOrigins             []string
+	MaxRequestBodyBytes        int64
+	OctoPrintBaseURL           string
+	OctoPrintAPIKey            string
+	OctoPrintAllowInsecureHTTP bool
+	OctoPrintTimeout           time.Duration
+	OctoPrintMaxBodyBytes      int64
 }
 
 type lookupFunc func(string) (string, bool)
@@ -75,6 +77,10 @@ func Load(lookup lookupFunc) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	allowInsecureHTTP, err := loadBool(lookup, OctoPrintAllowInsecureHTTPVariable)
+	if err != nil {
+		return nil, err
+	}
 	timeout, err := loadPositiveDuration(lookup, OctoPrintTimeoutVariable, DefaultOctoPrintTimeout)
 	if err != nil {
 		return nil, err
@@ -84,15 +90,16 @@ func Load(lookup lookupFunc) (*Config, error) {
 		return nil, err
 	}
 	return &Config{
-		MCPToken:              token,
-		ListenAddress:         listenAddress,
-		AllowedHosts:          allowedHosts,
-		AllowedOrigins:        allowedOrigins,
-		MaxRequestBodyBytes:   maxRequestBodyBytes,
-		OctoPrintBaseURL:      baseURL,
-		OctoPrintAPIKey:       apiKey,
-		OctoPrintTimeout:      timeout,
-		OctoPrintMaxBodyBytes: maxResponseBytes,
+		MCPToken:                   token,
+		ListenAddress:              listenAddress,
+		AllowedHosts:               allowedHosts,
+		AllowedOrigins:             allowedOrigins,
+		MaxRequestBodyBytes:        maxRequestBodyBytes,
+		OctoPrintBaseURL:           baseURL,
+		OctoPrintAPIKey:            apiKey,
+		OctoPrintAllowInsecureHTTP: allowInsecureHTTP,
+		OctoPrintTimeout:           timeout,
+		OctoPrintMaxBodyBytes:      maxResponseBytes,
 	}, nil
 }
 
