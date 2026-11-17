@@ -87,19 +87,26 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
       - name: Scan amd64 candidate
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
       - name: Push scanned amd64 candidate
+        id: push_amd64
         env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
-        run: docker push "$CANDIDATE_IMAGE"
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+        run: |
+          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'Unexpected push digest: %s\n' "$digest" >&2
+            exit 1
+          fi
+          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
       - name: Build arm64 candidate
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
@@ -107,19 +114,26 @@ jobs:
           platforms: linux/arm64
           load: true
           push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
           labels: ${{ steps.meta.outputs.labels }}
       - name: Scan arm64 candidate
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
       - name: Push scanned arm64 candidate
+        id: push_arm64
         env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
-        run: docker push "$CANDIDATE_IMAGE"
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+        run: |
+          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'Unexpected push digest: %s\n' "$digest" >&2
+            exit 1
+          fi
+          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
       - name: Build armv7 candidate
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
@@ -127,32 +141,41 @@ jobs:
           platforms: linux/arm/v7
           load: true
           push: false
-          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
           labels: ${{ steps.meta.outputs.labels }}
       - name: Scan armv7 candidate
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
-          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
       - name: Push scanned armv7 candidate
+        id: push_armv7
         env:
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
-        run: docker push "$CANDIDATE_IMAGE"
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
+        run: |
+          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            printf 'Unexpected push digest: %s\n' "$digest" >&2
+            exit 1
+          fi
+          printf 'image=%s@%s\n' "${CANDIDATE_IMAGE%:*}" "$digest" >> "$GITHUB_OUTPUT"
       - name: Publish manifest from scanned candidates
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
-          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}
+          AMD64_IMAGE: ${{ steps.push_amd64.outputs.image }}
+          ARM64_IMAGE: ${{ steps.push_arm64.outputs.image }}
+          ARMV7_IMAGE: ${{ steps.push_armv7.outputs.image }}
         run: |
           args=()
           while IFS= read -r tag; do
             args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
           docker buildx imagetools create "${args[@]}" \
-            "$CANDIDATE_IMAGE-amd64" \
-            "$CANDIDATE_IMAGE-arm64" \
-            "$CANDIDATE_IMAGE-armv7"
+            "$AMD64_IMAGE" \
+            "$ARM64_IMAGE" \
+            "$ARMV7_IMAGE"
       - name: Report published manifest
         env:
           IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
