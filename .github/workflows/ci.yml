@@ -25,6 +25,7 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
   image:
+    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +59,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push'
-    needs: [verify, image]
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -79,15 +80,80 @@ jobs:
           tags: |
             type=sha,format=long
             type=ref,event=tag
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
-        id: build
+      - name: Build amd64 candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Report published digest
+      - name: Scan amd64 candidate
+        uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        with:
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
+          fail-build: true
+          severity-cutoff: high
+          grype-version: v0.102.0
+      - name: Push scanned amd64 candidate
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: printf 'Published image digest: `%s`\n' "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-amd64
+        run: docker push "$CANDIDATE_IMAGE"
+      - name: Build arm64 candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Scan arm64 candidate
+        uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        with:
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
+          fail-build: true
+          severity-cutoff: high
+          grype-version: v0.102.0
+      - name: Push scanned arm64 candidate
+        env:
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-arm64
+        run: docker push "$CANDIDATE_IMAGE"
+      - name: Build armv7 candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          platforms: linux/arm/v7
+          load: true
+          push: false
+          tags: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Scan armv7 candidate
+        uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        with:
+          image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
+          fail-build: true
+          severity-cutoff: high
+          grype-version: v0.102.0
+      - name: Push scanned armv7 candidate
+        env:
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-armv7
+        run: docker push "$CANDIDATE_IMAGE"
+      - name: Publish manifest from scanned candidates
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            args+=(--tag "$tag")
+          done <<< "$IMAGE_TAGS"
+          docker buildx imagetools create "${args[@]}" \
+            "$CANDIDATE_IMAGE-amd64" \
+            "$CANDIDATE_IMAGE-arm64" \
+            "$CANDIDATE_IMAGE-armv7"
+      - name: Report published manifest
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: docker buildx imagetools inspect "${IMAGE_TAGS%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
