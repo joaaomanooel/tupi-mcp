@@ -22,12 +22,21 @@ jobs:
           cache: true
       - run: go test ./...
       - run: go vet ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
+          load: true
           push: false
+          tags: local/tupi-mcp:ci
+      - uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
+        with:
+          image: local/tupi-mcp:ci
+          fail-build: true
+          severity-cutoff: high
+          grype-version: v0.102.0
 
   publish:
     if: github.event_name == 'push'
