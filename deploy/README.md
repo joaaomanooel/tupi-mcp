@@ -1,13 +1,13 @@
 # Implantação do Tupi MCP com OctoPrint
 
-Este diretório contém a configuração versionada de implantação do Tupi MCP ao lado de uma instância oficial do OctoPrint. O OctoPrint fica na versão estável `1.11.8` e o Tupi MCP usa uma tag de release publicada, nunca `latest`. As duas portas publicadas escutam apenas no loopback do host, e todo o tráfego entre o Tupi MCP e o OctoPrint fica em uma rede Docker dedicada.
+Este diretório contém a configuração versionada de implantação do Tupi MCP ao lado de uma instância oficial do OctoPrint. O OctoPrint fica na versão estável `1.11.8` e o Tupi MCP fica fixo na tag estável `v0.1.0` de `ghcr.io/joaaomanooel/tupi-mcp`, nunca `latest`; o Pi não compila imagens. A configuração é versionada, mas a implantação no Raspberry Pi e a validação com hardware real ainda não foram realizadas. As duas portas publicadas escutam apenas no loopback do host, e todo o tráfego entre o Tupi MCP e o OctoPrint fica em uma rede Docker dedicada.
 
 ## Pré-requisitos
 
 - Raspberry Pi `arm64` com Docker Engine e o plugin `docker compose` v2.
 - A impressora conectada ao host, criando `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`.
 - O grupo `dialout` do host com GID `20`, que é repassado ao contêiner do OctoPrint. Confirme com `getent group dialout`.
-- Uma tag de release publicada no GHCR para `ghcr.io/joaaomanooel/tupi-mcp`, no formato `vMAJOR.MINOR.PATCH`. Se ainda não houver release publicado, publique um antes de implantar: este incremento não compila imagens.
+- A imagem `ghcr.io/joaaomanooel/tupi-mcp:v0.1.0` publicada no GHCR. Ela só existe depois que o job de publicação de um release estável termina com sucesso; veja a seção Imagem e sequência de release. Este incremento não compila imagens.
 - Aproximadamente 500 MB livres em disco para a imagem do OctoPrint e memória suficiente para o conjunto. O Pi compartilha cerca de 900 MiB com outros serviços, e esta configuração não impõe limites de memória; verifique o espaço livre antes de subir os contêineres.
 
 ## Arquivos
@@ -17,6 +17,19 @@ Este diretório contém a configuração versionada de implantação do Tupi MCP
 | `compose.yaml` | Serviços `octoprint` e `tupi-mcp`, rede `octoprint-api` e volume `octoprint-data` |
 | `env.example` | Nomes das variáveis e placeholders, sem valores utilizáveis |
 | `.env` | Segredos reais do host, ignorado pelo Git, criado a partir de `env.example` |
+
+## Imagem e sequência de release
+
+`compose.yaml` fixa `ghcr.io/joaaomanooel/tupi-mcp:v0.1.0`. A tag não vem do `.env`, e o Pi não compila imagens.
+
+A imagem versionada só passa a existir quando o job de publicação termina com sucesso. A sequência é:
+
+1. Faça o merge da mudança em `main`.
+2. Crie a tag estável `vMAJOR.MINOR.PATCH` apontando para um commit contido em `main`, como `v0.1.0`.
+3. Confira o workflow acionado pelo push da tag: ele valida o código e compila e escaneia as imagens `amd64`, `arm64` e `arm/v7`, sem publicá-las. Essa é uma verificação manual antes do release; o job de publicação não exige que ela tenha passado.
+4. Publique um release estável, não uma pré-release, a partir da tag, com notas não vazias. O job de publicação então recompila as três imagens, escaneia exatamente esses digests e só depois cria o manifest multiarch com a tag exata do release, por exemplo `ghcr.io/joaaomanooel/tupi-mcp:v0.1.0`.
+
+Até o job de publicação terminar com sucesso, a tag não existe no registry e `docker compose pull` falha com `manifest unknown`. Aguarde o job; não use `latest`, release candidate ou compilação local no Pi como substituto.
 
 ## Preparação do `.env`
 
@@ -28,13 +41,14 @@ chmod 600 .env
 openssl rand -hex 32
 ```
 
-Substitua os três valores:
+Substitua os dois valores:
 
 | Variável | Conteúdo |
 | --- | --- |
-| `TUPI_MCP_IMAGE_TAG` | Tag `vMAJOR.MINOR.PATCH` publicada no GHCR |
 | `TUPI_MCP_TOKEN` | Token gerado por `openssl rand -hex 32`, com pelo menos 32 bytes e sem espaços |
 | `TUPI_OCTOPRINT_API_KEY` | Chave de API de um usuário dedicado somente leitura |
+
+A imagem não é configurada no `.env`: `compose.yaml` fixa a tag `v0.1.0`.
 
 O placeholder de `TUPI_MCP_TOKEN` tem menos de 32 bytes de propósito: se for mantido, o serviço encerra na inicialização com erro seguro em vez de subir com um token fraco.
 
@@ -55,7 +69,25 @@ docker compose config --images
 docker compose config --services
 ```
 
-`config -q` falha se alguma variável obrigatória estiver ausente ou se a sintaxe do arquivo estiver inválida. `--images` deve mostrar `octoprint/octoprint:1.11.8` e a tag escolhida para o Tupi MCP.
+`config -q` falha se alguma variável obrigatória estiver ausente ou se a sintaxe do arquivo estiver inválida. `--images` deve mostrar `octoprint/octoprint:1.11.8` e `ghcr.io/joaaomanooel/tupi-mcp:v0.1.0`.
+
+## Acesso ao GHCR
+
+A visibilidade do pacote não pode ser deduzida da visibilidade do repositório. Depois de publicar, inspecione o pacote `tupi-mcp` na página de pacotes do GitHub e confirme se o acesso é público ou privado. Não altere a visibilidade do pacote como parte deste incremento.
+
+Se o pacote estiver privado ou exigir login, autentique-se com um token de acesso pessoal (classic) que tenha apenas o escopo `read:packages`:
+
+```sh
+docker login ghcr.io --username SEU_USUARIO
+```
+
+`SEU_USUARIO` é um exemplo: substitua pelo seu nome de usuário do GitHub, sem os sinais `<` e `>`. Entre `<` e `>` o shell interpretaria o texto como redirecionamento de entrada e o comando não seria executado.
+
+Digite o token no prompt interativo. Não coloque o token no `.env`, em argumentos de linha de comando nem no Git.
+
+O `docker login` grava a credencial no diretório do usuário que executa o comando: para o usuário atual, em `~/.docker/config.json`; com `sudo`, em `/root/.docker/config.json`. Use o mesmo usuário no login, no `pull` e no `up`. Se for realmente necessário usar `sudo` no Docker, autentique-se também com `sudo docker login ghcr.io --username SEU_USUARIO`.
+
+Após o pull, encerre a sessão com `docker logout ghcr.io`, no mesmo usuário e com o mesmo `sudo` do login.
 
 ## Implantação no host
 
@@ -65,7 +97,7 @@ docker compose pull
 docker compose up -d
 ```
 
-`up -d` inicia os dois serviços, mas não envia arquivos nem comandos à impressora. O OctoPrint sobe sem configuração de porta serial: selecione em `Settings > Serial Connection` a porta `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, que é o caminho mapeado do host, e conecte manualmente quando o hardware estiver pronto.
+`pull` só funciona depois que a tag existe no registry e, se o pacote exigir login, após o `docker login` descrito acima. `up -d` inicia os dois serviços, mas não envia arquivos nem comandos à impressora. O OctoPrint sobe sem configuração de porta serial: selecione em `Settings > Serial Connection` a porta `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`, que é o caminho mapeado do host, e conecte manualmente quando o hardware estiver pronto.
 
 ## Verificação
 
@@ -100,7 +132,8 @@ ssh -N -L 8080:127.0.0.1:8080 joao@server.local
 | --- | --- |
 | O OctoPrint não abre a porta serial | `ls -l /dev/serial/by-id/` no host e `getent group dialout`; o GID precisa ser `20` |
 | `permission denied` ao abrir a porta | O grupo `20` não existe no contêiner ou o nó mapeado está diferente do configurado no OctoPrint |
-| `pull` recusa a imagem do Tupi MCP | `TUPI_MCP_IMAGE_TAG` não aponta para uma tag publicada |
+| `pull` falha com `manifest unknown` | A tag `v0.1.0` ainda não existe; o job de publicação do release estável não terminou com sucesso |
+| `pull` falha com `unauthorized` ou `denied` | Pacote privado ou credencial ausente; confirme a visibilidade real do pacote e repita o `docker login ghcr.io` com `read:packages` usando o mesmo usuário do `pull` |
 | O Tupi MCP encerra na inicialização | Token com menos de 32 bytes, com espaços ou variável obrigatória ausente |
 | Ferramentas retornam erro seguro do OctoPrint | Chave inválida, usuário sem o grupo `Read-only Access` ou serviço `octoprint` fora do ar |
 | `docker compose config` reclama de variável ausente | O comando não foi executado em `deploy/` ou o `.env` não foi criado |

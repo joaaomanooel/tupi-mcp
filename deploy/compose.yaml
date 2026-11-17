@@ -21,7 +21,7 @@ services:
         max-file: "3"
 
   tupi-mcp:
-    image: "ghcr.io/joaaomanooel/tupi-mcp:${TUPI_MCP_IMAGE_TAG:?defina TUPI_MCP_IMAGE_TAG com uma tag vMAJOR.MINOR.PATCH publicada}"
+    image: "ghcr.io/joaaomanooel/tupi-mcp:v0.1.0"
     restart: unless-stopped
     read_only: true
     cap_drop:
