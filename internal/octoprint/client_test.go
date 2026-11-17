@@ -262,6 +262,35 @@ func TestBaseURLTransportPolicy(t *testing.T) {
 	}
 }
 
+func TestInsecureHTTPRequiresExplicitOptIn(t *testing.T) {
+	var requests atomic.Int32
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	httpClient := &http.Client{Timeout: time.Second, Transport: transport}
+
+	client, err := NewClient("http://octoprint.example:5000", "test-secret", httpClient, 128, false)
+	if client != nil {
+		t.Fatal("non-loopback HTTP URL created a client by default")
+	}
+	assertKind(t, err, ErrorConfig)
+	if requests.Load() != 0 {
+		t.Fatal("rejected URL sent a request")
+	}
+
+	client, err = NewClient("http://octoprint.example:5000", "test-secret", httpClient, 128, true)
+	if err != nil || client == nil {
+		t.Fatalf("explicit insecure HTTP opt-in was rejected: %v", err)
+	}
+	if _, err := client.Connection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("request count = %d, want 1", requests.Load())
+	}
+}
+
 func TestHTTPSRead(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || r.Method != http.MethodGet || r.URL.Path != "/api/connection" || r.Header.Get("X-Api-Key") != "test-secret" {

@@ -45,6 +45,9 @@ func TestLoadDefaults(t *testing.T) {
 	if settings.OctoPrintTimeout != DefaultOctoPrintTimeout {
 		t.Errorf("timeout = %v, want %v", settings.OctoPrintTimeout, DefaultOctoPrintTimeout)
 	}
+	if settings.OctoPrintAllowInsecureHTTP {
+		t.Error("insecure HTTP is enabled by default")
+	}
 	if settings.OctoPrintMaxBodyBytes != DefaultMaxResponseBodyBytes {
 		t.Errorf("response limit = %d, want %d", settings.OctoPrintMaxBodyBytes, DefaultMaxResponseBodyBytes)
 	}
@@ -58,6 +61,7 @@ func TestLoadOverrides(t *testing.T) {
 	values[MaxRequestBytesVariable] = "2048"
 	values[OctoPrintTimeoutVariable] = "3s"
 	values[OctoPrintMaxResponseVariable] = "4096"
+	values[OctoPrintAllowInsecureHTTPVariable] = "true"
 
 	settings, err := Load(lookupFrom(values))
 
@@ -80,6 +84,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if settings.OctoPrintMaxBodyBytes != 4096 {
 		t.Errorf("response limit = %d, want 4096", settings.OctoPrintMaxBodyBytes)
+	}
+	if !settings.OctoPrintAllowInsecureHTTP {
+		t.Error("insecure HTTP = false, want true")
 	}
 }
 
