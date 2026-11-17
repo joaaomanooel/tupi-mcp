@@ -3,5 +3,6 @@
 .env
 .env.*
 !.env.example
+deploy/.env
 *.log
 .DS_Store

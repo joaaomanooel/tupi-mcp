@@ -1,0 +1,56 @@
+name: tupi
+
+services:
+  octoprint:
+    image: octoprint/octoprint:1.11.8
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    devices:
+      - "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0:/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    group_add:
+      - "20"
+    volumes:
+      - octoprint-data:/octoprint
+    networks:
+      - octoprint-api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tupi-mcp:
+    image: "ghcr.io/joaaomanooel/tupi-mcp:${TUPI_MCP_IMAGE_TAG:?defina TUPI_MCP_IMAGE_TAG com uma tag vMAJOR.MINOR.PATCH publicada}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      TUPI_MCP_TOKEN: "${TUPI_MCP_TOKEN:?defina TUPI_MCP_TOKEN no deploy/.env}"
+      TUPI_OCTOPRINT_API_KEY: "${TUPI_OCTOPRINT_API_KEY:?defina TUPI_OCTOPRINT_API_KEY no deploy/.env}"
+      TUPI_MCP_LISTEN_ADDRESS: "0.0.0.0:8080"
+      TUPI_MCP_ALLOW_NON_LOOPBACK: "true"
+      TUPI_MCP_ALLOWED_HOSTS: "127.0.0.1:8080,localhost:8080"
+      TUPI_OCTOPRINT_BASE_URL: "http://octoprint:5000"
+      TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP: "true"
+    depends_on:
+      - octoprint
+    networks:
+      - octoprint-api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  octoprint-api:
+    driver: bridge
+
+volumes:
+  octoprint-data:
