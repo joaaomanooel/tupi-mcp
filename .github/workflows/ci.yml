@@ -101,7 +101,9 @@ jobs:
         env:
           CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
         run: |
-          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          push_output="$(docker push "$CANDIDATE_IMAGE")"
+          printf '%s\n' "$push_output"
+          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             printf 'Unexpected push digest: %s\n' "$digest" >&2
             exit 1
@@ -128,7 +130,9 @@ jobs:
         env:
           CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
         run: |
-          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          push_output="$(docker push "$CANDIDATE_IMAGE")"
+          printf '%s\n' "$push_output"
+          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             printf 'Unexpected push digest: %s\n' "$digest" >&2
             exit 1
@@ -155,7 +159,9 @@ jobs:
         env:
           CANDIDATE_IMAGE: ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
         run: |
-          digest="$(docker push --quiet "$CANDIDATE_IMAGE")"
+          push_output="$(docker push "$CANDIDATE_IMAGE")"
+          printf '%s\n' "$push_output"
+          digest="$(printf '%s\n' "$push_output" | sed -nE 's/^.* digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p')"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             printf 'Unexpected push digest: %s\n' "$digest" >&2
             exit 1
