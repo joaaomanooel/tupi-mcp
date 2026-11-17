@@ -22,7 +22,7 @@ jobs:
           cache: true
       - run: go test ./...
       - run: go vet ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   image:
     if: github.event_name == 'pull_request'
@@ -53,6 +53,7 @@ jobs:
       - uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
           image: local/tupi-mcp:ci-${{ matrix.arch }}
+          output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
@@ -93,6 +94,7 @@ jobs:
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
           image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-amd64
+          output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
@@ -122,6 +124,7 @@ jobs:
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
           image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-arm64
+          output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
@@ -151,6 +154,7 @@ jobs:
         uses: anchore/scan-action@568b89d27fc18c60e56937bff480c91c772cd993
         with:
           image: docker:ghcr.io/joaaomanooel/tupi-mcp:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-armv7
+          output-format: table
           fail-build: true
           severity-cutoff: high
           grype-version: v0.102.0
