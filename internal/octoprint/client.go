@@ -92,6 +92,50 @@ func (c *Client) Files(ctx context.Context) (*FilesResponse, error) {
 	return readResponse[FilesResponse](ctx, c, "/api/files")
 }
 
+func (c *Client) Version(ctx context.Context) (*VersionResponse, error) {
+	return readResponse[VersionResponse](ctx, c, "/api/version")
+}
+
+func (c *Client) Server(ctx context.Context) (*ServerResponse, error) {
+	return readResponse[ServerResponse](ctx, c, "/api/server")
+}
+
+func (c *Client) ToolTemperatures(ctx context.Context) (*ToolTemperaturesResponse, error) {
+	return readResponse[ToolTemperaturesResponse](ctx, c, "/api/printer/tool")
+}
+
+func (c *Client) BedTemperature(ctx context.Context) (*BedTemperatureResponse, error) {
+	return readResponse[BedTemperatureResponse](ctx, c, "/api/printer/bed")
+}
+
+func (c *Client) ChamberTemperature(ctx context.Context) (*ChamberTemperatureResponse, error) {
+	return readResponse[ChamberTemperatureResponse](ctx, c, "/api/printer/chamber")
+}
+
+func (c *Client) SDState(ctx context.Context) (*SDStateResponse, error) {
+	return readResponse[SDStateResponse](ctx, c, "/api/printer/sd")
+}
+
+func (c *Client) LastPrinterError(ctx context.Context) (*PrinterErrorResponse, error) {
+	return readResponse[PrinterErrorResponse](ctx, c, "/api/printer/error")
+}
+
+func (c *Client) Profiles(ctx context.Context) (*ProfilesResponse, error) {
+	return readResponse[ProfilesResponse](ctx, c, "/api/printerprofiles")
+}
+
+func (c *Client) Slicing(ctx context.Context) (*SlicingResponse, error) {
+	return readResponse[SlicingResponse](ctx, c, "/api/slicing")
+}
+
+func (c *Client) Timelapse(ctx context.Context) (*TimelapseResponse, error) {
+	return readResponseWithQuery[TimelapseResponse](ctx, c, "/api/timelapse", url.Values{"unrendered": {"true"}})
+}
+
+func (c *Client) Settings(ctx context.Context) (*SettingsResponse, error) {
+	return readResponse[SettingsResponse](ctx, c, "/api/settings")
+}
+
 func (c *Client) UploadGCode(ctx context.Context, filename string, contents []byte) (*UploadResponse, error) {
 	if !validGCodeFilename(filename) || len(contents) == 0 {
 		return nil, &Error{Kind: ErrorInvalidUpload}
@@ -167,9 +211,14 @@ func validGCodeFilename(filename string) bool {
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
+	return c.getWithQuery(ctx, endpoint, nil)
+}
+
+func (c *Client) getWithQuery(ctx context.Context, endpoint string, query url.Values) ([]byte, error) {
 	target := c.baseURL
 	target.Path = strings.TrimRight(target.Path, "/") + endpoint
 	target.RawPath = ""
+	target.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return nil, safeTransportError(ctx, err)

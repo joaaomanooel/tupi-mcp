@@ -3,6 +3,9 @@ package octoprint
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -95,6 +98,8 @@ type JobProgress struct {
 
 type FilesResponse struct {
 	Files []FileInfo `json:"files"`
+	Free  *int64     `json:"free"`
+	Total *int64     `json:"total"`
 }
 
 type UploadResponse struct {
@@ -116,8 +121,163 @@ type FileInfo struct {
 	Children []FileInfo `json:"children"`
 }
 
+type VersionResponse struct {
+	API    *string `json:"api"`
+	Server *string `json:"server"`
+	Text   *string `json:"text"`
+}
+
+type ServerResponse struct {
+	Version  *string         `json:"version"`
+	Safemode json.RawMessage `json:"safemode"`
+}
+
+type ToolTemperaturesResponse struct {
+	Tools Temperatures
+}
+
+func (r *ToolTemperaturesResponse) UnmarshalJSON(data []byte) error {
+	var temperatures *Temperatures
+	if err := json.Unmarshal(data, &temperatures); err != nil {
+		return err
+	}
+	if temperatures == nil {
+		return errors.New("tool temperatures must be an object")
+	}
+	r.Tools = *temperatures
+	return nil
+}
+
+type BedTemperatureResponse struct {
+	Bed *Temperature `json:"bed"`
+}
+
+type ChamberTemperatureResponse struct {
+	Chamber *Temperature `json:"chamber"`
+}
+
+type SDStateResponse struct {
+	Ready *bool `json:"ready"`
+}
+
+type PrinterErrorResponse struct {
+	Consequence *string `json:"consequence"`
+	Message     *string `json:"error"`
+	FAQ         *string `json:"faq"`
+	Reason      *string `json:"reason"`
+}
+
+type ProfilesResponse struct {
+	Profiles map[string]PrinterProfile `json:"profiles"`
+}
+
+type PrinterProfile struct {
+	ID            *string          `json:"id"`
+	Name          *string          `json:"name"`
+	Color         *string          `json:"color"`
+	Model         *string          `json:"model"`
+	Default       *bool            `json:"default"`
+	Current       *bool            `json:"current"`
+	HeatedBed     *bool            `json:"heatedBed"`
+	HeatedChamber *bool            `json:"heatedChamber"`
+	Volume        *PrinterVolume   `json:"volume"`
+	Extruder      *PrinterExtruder `json:"extruder"`
+}
+
+type PrinterVolume struct {
+	Width      *float64 `json:"width"`
+	Depth      *float64 `json:"depth"`
+	Height     *float64 `json:"height"`
+	FormFactor *string  `json:"formFactor"`
+	Origin     *string  `json:"origin"`
+}
+
+type PrinterExtruder struct {
+	Count          *int     `json:"count"`
+	NozzleDiameter *float64 `json:"nozzleDiameter"`
+	SharedNozzle   *bool    `json:"sharedNozzle"`
+}
+
+type SlicingResponse struct {
+	Profiles map[string][]string
+}
+
+func (r *SlicingResponse) UnmarshalJSON(data []byte) error {
+	var slicers map[string]struct {
+		Profiles map[string]json.RawMessage `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &slicers); err != nil {
+		return err
+	}
+	if slicers == nil {
+		return errors.New("slicing response must be an object")
+	}
+	profiles := make(map[string][]string, len(slicers))
+	for slicer, entry := range slicers {
+		names := make([]string, 0, len(entry.Profiles))
+		for name := range entry.Profiles {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		profiles[slicer] = names
+	}
+	r.Profiles = profiles
+	return nil
+}
+
+type TimelapseResponse struct {
+	Config     TimelapseConfig       `json:"config"`
+	Files      []TimelapseFile       `json:"files"`
+	Unrendered []UnrenderedTimelapse `json:"unrendered"`
+}
+
+type TimelapseConfig struct {
+	Type             *string  `json:"type"`
+	PostRoll         *int64   `json:"postRoll"`
+	FPS              *int64   `json:"fps"`
+	RetractionZHop   *float64 `json:"retractionZHop"`
+	MinDelay         *int64   `json:"minDelay"`
+	Interval         *int64   `json:"interval"`
+	RenderAfterPrint *string  `json:"renderAfterPrint"`
+}
+
+type TimelapseFile struct {
+	Name  *string `json:"name"`
+	Size  *string `json:"size"`
+	Bytes *int64  `json:"bytes"`
+	Date  *string `json:"date"`
+}
+
+type UnrenderedTimelapse struct {
+	Name       *string `json:"name"`
+	Size       *string `json:"size"`
+	Bytes      *int64  `json:"bytes"`
+	Date       *string `json:"date"`
+	Recording  *bool   `json:"recording"`
+	Rendering  *bool   `json:"rendering"`
+	Processing *bool   `json:"processing"`
+}
+
+type SettingsResponse struct {
+	Feature *SettingsFeature `json:"feature"`
+}
+
+type SettingsFeature struct {
+	TemperatureGraph            *bool `json:"temperatureGraph"`
+	SDSupport                   *bool `json:"sdSupport"`
+	ModelSizeDetection          *bool `json:"modelSizeDetection"`
+	PrintStartConfirmation      *bool `json:"printStartConfirmation"`
+	PrintCancelConfirmation     *bool `json:"printCancelConfirmation"`
+	UploadOverwriteConfirmation *bool `json:"uploadOverwriteConfirmation"`
+	FileDeleteConfirmation      *bool `json:"fileDeleteConfirmation"`
+}
+
 func readResponse[T any](ctx context.Context, client *Client, endpoint string) (*T, error) {
-	body, err := client.get(ctx, endpoint)
+	return readResponseWithQuery[T](ctx, client, endpoint, nil)
+}
+
+func readResponseWithQuery[T any](ctx context.Context, client *Client, endpoint string, query url.Values) (*T, error) {
+	body, err := client.getWithQuery(ctx, endpoint, query)
 	if err != nil {
 		return nil, err
 	}

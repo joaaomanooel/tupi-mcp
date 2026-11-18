@@ -29,7 +29,7 @@ const (
 	connectionBody = `{"current":{"state":"Operational","port":"/dev/ttyUSB0","baudrate":115200,"printerProfile":"ender3-v3-se"}}`
 	printerBody    = `{"state":{"text":"Operational","flags":{"operational":true,"printing":false,"paused":false,"ready":true,"error":false,"closedOrError":false}},"temperature":{"bed":{"actual":21.5,"target":0},"tool0":{"actual":22.25,"target":200}}}`
 	jobBody        = `{"job":{"file":{"name":"cube.gcode","display":"cube","path":"cube.gcode","origin":"local","size":1024,"date":1700000000},"estimatedPrintTime":120.5},"progress":{"completion":50,"filepos":512,"printTime":60,"printTimeLeft":60.5,"printTimeLeftOrigin":"analysis"},"state":"Printing"}`
-	filesBody      = `{"files":[{"name":"cube.gcode","display":"cube","path":"cube.gcode","type":"machine","origin":"local","size":1024,"date":1700000000},{"name":"folder","type":"folder","children":[{"name":"inner.gcode","path":"folder/inner.gcode","type":"machine"}]}]}`
+	filesBody      = `{"files":[{"name":"cube.gcode","display":"cube","path":"cube.gcode","type":"machine","origin":"local","size":1024,"date":1700000000},{"name":"folder","type":"folder","children":[{"name":"inner.gcode","path":"folder/inner.gcode","type":"machine"}]}],"free":0,"total":8192}`
 )
 
 type printerMock struct {
@@ -379,6 +379,9 @@ func TestToolInvocation(t *testing.T) {
 	if len(files.Files) != 2 {
 		t.Fatalf("files = %d, want 2", len(files.Files))
 	}
+	if files.Free == nil || *files.Free != 0 || files.Total == nil || *files.Total != 8192 {
+		t.Errorf("unexpected local upload capacity: %+v", files)
+	}
 	if files.Files[0].Size == nil || *files.Files[0].Size != 1024 {
 		t.Errorf("unexpected file size: %+v", files.Files[0])
 	}
@@ -511,6 +514,31 @@ func TestToolRejectsArguments(t *testing.T) {
 	}
 }
 
+func TestSettingsToolReturnsOnlyAllowlistedFeatureFlags(t *testing.T) {
+	mock, _, session := newIntegrationServer(t)
+	mock.setRoute("/api/settings", jsonRoute(`{"feature":{"sdSupport":false,"modelSizeDetection":true,"unlisted":true},"api":{"key":"upstream-secret"},"plugins":{"example":{"token":"upstream-token"}}}`))
+
+	result := callTool(t, session, "printer_get_settings", nil)
+	output := decodeOutput[map[string]json.RawMessage](t, result)
+	feature := output["feature"]
+	var flags map[string]bool
+	if err := json.Unmarshal(feature, &flags); err != nil {
+		t.Fatalf("decode feature flags: %v", err)
+	}
+	if sdSupport, exists := flags["sdSupport"]; len(output) != 1 || len(flags) != 2 || !exists || sdSupport || !flags["modelSizeDetection"] {
+		t.Fatalf("unexpected settings output: %+v", output)
+	}
+	if requests := mock.recordedRequests(); len(requests) != 1 || requests[0] != "GET /api/settings" {
+		t.Fatalf("unexpected OctoPrint requests: %v", requests)
+	}
+
+	mock.setRoute("/api/settings", jsonRoute(`{"feature":{"sdSupport":"upstream-secret"}}`))
+	result = callTool(t, session, "printer_get_settings", nil)
+	if result == nil || !result.IsError || !contains(contentText(result), "invalid_json") || contains(contentText(result), "upstream-secret") {
+		t.Fatalf("expected a safe error for an invalid feature flag, got %s", contentText(result))
+	}
+}
+
 func TestToolErrorsAreSafeAndServerKeepsServing(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -550,6 +578,10 @@ func TestToolErrorsAreSafeAndServerKeepsServing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mock, _, session := newIntegrationServer(t)
+			before, err := session.ListTools(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("list tools before upstream error: %v", err)
+			}
 			healthy := mock.route(tc.path)
 
 			mock.setRoute(tc.path, tc.handler)
@@ -573,7 +605,7 @@ func TestToolErrorsAreSafeAndServerKeepsServing(t *testing.T) {
 				t.Fatalf("expected repeated tool error, got %+v", failed)
 			}
 			listed, err := session.ListTools(context.Background(), nil)
-			if err != nil || len(listed.Tools) != 5 {
+			if err != nil || len(listed.Tools) != len(before.Tools) {
 				t.Fatalf("server stopped serving after tool error: %v", err)
 			}
 
