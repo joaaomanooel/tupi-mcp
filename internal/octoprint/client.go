@@ -267,6 +267,51 @@ func (c *Client) fileCommand(ctx context.Context, command, source, destination s
 	return result, nil
 }
 
+func (c *Client) SelectFile(ctx context.Context, filename string) error {
+	if !validLocalPath(filename) {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	payload, err := json.Marshal(struct {
+		Command string `json:"command"`
+		Print   bool   `json:"print"`
+	}{Command: "select"})
+	if err != nil {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	return c.sendNoContent(ctx, http.MethodPost, "/api/files/local/"+filename, payload, "application/json")
+}
+
+func (c *Client) DeleteFile(ctx context.Context, filename string) error {
+	if !validLocalPath(filename) {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	return c.sendNoContent(ctx, http.MethodDelete, "/api/files/local/"+filename, nil, "")
+}
+
+func (c *Client) SliceFile(ctx context.Context, filename, destination string) (*FileCommandResponse, error) {
+	if !validLocalPath(filename) || !validLocalPath(destination) {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+	payload, err := json.Marshal(struct {
+		Command     string `json:"command"`
+		Destination string `json:"destination"`
+		Select      bool   `json:"select"`
+		Print       bool   `json:"print"`
+	}{Command: "slice", Destination: destination})
+	if err != nil {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+	responseBody, err := c.post(ctx, "/api/files/local/"+filename, payload, "application/json")
+	if err != nil {
+		return nil, err
+	}
+	var result *FileCommandResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil || result == nil || result.Path == nil || !validLocalPath(*result.Path) {
+		return nil, &Error{Kind: ErrorInvalidJSON}
+	}
+	return result, nil
+}
+
 func ValidGCodeContents(contents []byte) bool {
 	for len(contents) > 0 {
 		character, size := utf8.DecodeRune(contents)
@@ -301,20 +346,42 @@ func validLocalName(name string) bool {
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, body []byte, contentType string) ([]byte, error) {
+	response, err := c.send(ctx, http.MethodPost, endpoint, body, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return c.readResponse(ctx, response)
+}
+
+func (c *Client) sendNoContent(ctx context.Context, method, endpoint string, body []byte, contentType string) error {
+	response, err := c.send(ctx, method, endpoint, body, contentType)
+	if err != nil {
+		return err
+	}
+	return c.readNoContent(ctx, response)
+}
+
+func (c *Client) send(ctx context.Context, method, endpoint string, body []byte, contentType string) (*http.Response, error) {
 	target := c.baseURL
 	target.Path = strings.TrimRight(target.Path, "/") + endpoint
 	target.RawPath = ""
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {
 		return nil, safeTransportError(ctx, err)
 	}
 	request.Header.Set("X-Api-Key", c.apiKey)
-	request.Header.Set("Content-Type", contentType)
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, safeTransportError(ctx, err)
 	}
-	return c.readResponse(ctx, response)
+	return response, nil
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
@@ -336,6 +403,18 @@ func (c *Client) getWithQuery(ctx context.Context, endpoint string, query url.Va
 		return nil, safeTransportError(ctx, err)
 	}
 	return c.readResponse(ctx, response)
+}
+
+func (c *Client) readNoContent(ctx context.Context, response *http.Response) error {
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes))
+		return &Error{Kind: ErrorHTTPStatus, StatusCode: response.StatusCode}
+	}
+	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes)); err != nil {
+		return safeTransportError(ctx, err)
+	}
+	return nil
 }
 
 func (c *Client) readResponse(ctx context.Context, response *http.Response) ([]byte, error) {

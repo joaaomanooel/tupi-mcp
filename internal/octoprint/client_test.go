@@ -892,6 +892,224 @@ func TestFileMutationResponsesRejectInvalidPaths(t *testing.T) {
 	}
 }
 
+func TestSelectFileSendsCommandWithoutPrint(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/api/files/local/projects/part%20one.gcode" {
+			t.Errorf("unexpected select request: %s %s", r.Method, r.URL.EscapedPath())
+		}
+		if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+			t.Error("unexpected credentials")
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("select body: %v", err)
+			return
+		}
+		var command map[string]json.RawMessage
+		if err := json.Unmarshal(body, &command); err != nil || len(command) != 2 || string(command["command"]) != `"select"` || string(command["print"]) != "false" {
+			t.Errorf("unexpected select body: %s", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := newTestClient(t, server.URL, 1024).SelectFile(context.Background(), "projects/part one.gcode"); err != nil {
+		t.Fatalf("unexpected select error: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("select sent %d requests", requests.Load())
+	}
+}
+
+func TestDeleteFileAcceptsNoContent(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/files/local/projects/part one.gcode" || r.URL.EscapedPath() != "/api/files/local/projects/part%20one.gcode" {
+			t.Errorf("unexpected delete request: %s %s", r.Method, r.URL.EscapedPath())
+		}
+		if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+			t.Error("unexpected credentials")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil || len(body) != 0 || r.ContentLength > 0 {
+			t.Errorf("delete request carried a body: %q (%v)", body, err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if err := newTestClient(t, server.URL, 1024).DeleteFile(context.Background(), "projects/part one.gcode"); err != nil {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("delete sent %d requests", requests.Load())
+	}
+}
+
+func TestSliceFileSendsDestinationWithoutBlockingOverwrite(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/files/local/models/part.stl" {
+			t.Errorf("unexpected slice request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+			t.Error("unexpected credentials")
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("slice body: %v", err)
+			return
+		}
+		var command map[string]json.RawMessage
+		if err := json.Unmarshal(body, &command); err != nil || len(command) != 4 || string(command["command"]) != `"slice"` || string(command["destination"]) != `"archive/part.gcode"` || string(command["select"]) != "false" || string(command["print"]) != "false" {
+			t.Errorf("unexpected slice body: %s", body)
+		}
+		if _, present := command["noOverwrite"]; present {
+			t.Error("slice blocked the upstream destination overwrite")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, `{"name":"part.gcode","path":"archive/part.gcode","display":"part","origin":"local","refs":{"resource":"https://octoprint.internal/api/files/local/archive/part.gcode","download":"https://octoprint.internal/downloads/files/local/archive/part.gcode"}}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).SliceFile(context.Background(), "models/part.stl", "archive/part.gcode")
+	if err != nil || result == nil || result.Path == nil || *result.Path != "archive/part.gcode" {
+		t.Fatalf("unexpected slice response: %+v %v", result, err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("slice sent %d requests", requests.Load())
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), "https://octoprint.internal") {
+		t.Fatalf("upstream URL was not filtered: %s (%v)", encoded, err)
+	}
+}
+
+func TestFileCommandsPreserveUpstreamConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"select while printing", func(client *Client) error {
+			return client.SelectFile(context.Background(), "projects/a.gcode")
+		}},
+		{"delete file in use", func(client *Client) error {
+			return client.DeleteFile(context.Background(), "projects/a.gcode")
+		}},
+		{"delete folder in use", func(client *Client) error {
+			return client.DeleteFile(context.Background(), "projects")
+		}},
+		{"slice into printing file", func(client *Client) error {
+			_, err := client.SliceFile(context.Background(), "models/a.stl", "archive/a.gcode")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "upstream-secret-detail")
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusConflict {
+				t.Fatalf("missing conflict status: %v", err)
+			}
+			if strings.Contains(err.Error(), "upstream-secret-detail") {
+				t.Fatal("upstream detail leaked")
+			}
+		})
+	}
+}
+
+func TestFileCommandsReturnSafeErrorsWithoutUpstreamBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"select", func(client *Client) error {
+			return client.SelectFile(context.Background(), "projects/a.gcode")
+		}},
+		{"delete", func(client *Client) error {
+			return client.DeleteFile(context.Background(), "projects/a.gcode")
+		}},
+		{"slice", func(client *Client) error {
+			_, err := client.SliceFile(context.Background(), "models/a.stl", "archive/a.gcode")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("missing upstream status: %v", err)
+			}
+			if err.Error() != "octoprint: http_status" {
+				t.Fatalf("unsafe error: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileCommandsRejectInvalidPathsWithoutRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 1024)
+
+	for _, invalid := range []string{"", ".", "..", "../a.gcode", "a//b.gcode", "/a.gcode", "a/", `dir\file.gcode`, "dir/\x01a.gcode", "dir/./a.gcode"} {
+		assertKind(t, client.SelectFile(context.Background(), invalid), ErrorInvalidPath)
+		assertKind(t, client.DeleteFile(context.Background(), invalid), ErrorInvalidPath)
+		_, err := client.SliceFile(context.Background(), invalid, "archive/a.gcode")
+		assertKind(t, err, ErrorInvalidPath)
+		_, err = client.SliceFile(context.Background(), "models/a.stl", invalid)
+		assertKind(t, err, ErrorInvalidPath)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("invalid paths sent %d requests", requests.Load())
+	}
+}
+
+func TestSliceFileResponseRequiresLocalPath(t *testing.T) {
+	for _, body := range []string{`{}`, `{"name":"a.gcode"}`, `{"path":"https://evil.example/a.gcode"}`, `{"path":"../a.gcode"}`} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(w, body)
+		}))
+		result, err := newTestClient(t, server.URL, 1024).SliceFile(context.Background(), "models/a.stl", "archive/a.gcode")
+		server.Close()
+
+		if result != nil {
+			t.Error("invalid slice response returned a result")
+		}
+		assertKind(t, err, ErrorInvalidJSON)
+	}
+}
+
 func TestPaddedAPIKeyIsRejectedBeforeRequest(t *testing.T) {
 	for _, key := range []string{" test-secret ", " test-secret", "test-secret ", "\ttest-secret\t"} {
 		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
