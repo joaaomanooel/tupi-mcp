@@ -2,6 +2,7 @@ package octoprint
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -619,6 +620,277 @@ func (b closedResponseBody) Read([]byte) (int, error) {
 }
 
 func (closedResponseBody) Close() error { return nil }
+
+func TestCreateFolder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/files/local" || r.Header.Get("X-Api-Key") != "test-secret" {
+			t.Errorf("unexpected folder request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.RawQuery != "" || strings.Contains(r.URL.String(), "test-secret") {
+			t.Error("credential in URL")
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+			t.Errorf("folder request missing multipart content type")
+		}
+		if err := r.ParseMultipartForm(1024); err != nil {
+			t.Errorf("folder form: %v", err)
+			return
+		}
+		if r.FormValue("foldername") != "parts" || r.FormValue("path") != "projects" {
+			t.Errorf("folder fields foldername=%q path=%q", r.FormValue("foldername"), r.FormValue("path"))
+		}
+		if _, present := r.MultipartForm.File["file"]; present {
+			t.Error("folder request included a file")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"folder":{"name":"parts","path":"projects/parts","origin":"local","refs":{"resource":"https://octoprint.internal/api/files/local/projects/parts"}},"done":true}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).CreateFolder(context.Background(), "parts", "projects")
+	if err != nil || result == nil || result.Folder == nil || result.Folder.Path == nil || *result.Folder.Path != "projects/parts" {
+		t.Fatalf("unexpected folder response: %+v %v", result, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), "https://octoprint.internal") {
+		t.Fatalf("upstream URL was not filtered: %s (%v)", encoded, err)
+	}
+}
+
+func TestCreateFolderWithoutParentOmitsPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1024); err != nil {
+			t.Errorf("folder form: %v", err)
+			return
+		}
+		if values := r.MultipartForm.Value["path"]; len(values) != 0 {
+			t.Errorf("path field sent without parent: %q", values)
+		}
+		if r.FormValue("foldername") != "parts" {
+			t.Errorf("foldername=%q", r.FormValue("foldername"))
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"folder":{"path":"parts"},"done":true}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).CreateFolder(context.Background(), "parts", "")
+	if err != nil || result == nil || result.Folder == nil || result.Folder.Path == nil || *result.Folder.Path != "parts" {
+		t.Fatalf("unexpected folder response: %+v %v", result, err)
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/files/local/projects/part one.gcode" || r.URL.EscapedPath() != "/api/files/local/projects/part%20one.gcode" {
+			t.Errorf("unexpected copy request: %s %s", r.Method, r.URL.EscapedPath())
+		}
+		if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+			t.Error("unexpected credentials")
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("copy body: %v", err)
+			return
+		}
+		var command map[string]string
+		if err := json.Unmarshal(body, &command); err != nil || len(command) != 2 || command["command"] != "copy" || command["destination"] != "archive/part one.gcode" {
+			t.Errorf("unexpected copy body: %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"name":"part one.gcode","path":"archive/part one.gcode","origin":"local","refs":{"resource":"https://octoprint.internal/api/files/local/archive/part%20one.gcode","download":"https://octoprint.internal/downloads/files/local/archive/part%20one.gcode"}}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).CopyFile(context.Background(), "projects/part one.gcode", "archive/part one.gcode")
+	if err != nil || result == nil || result.Path == nil || *result.Path != "archive/part one.gcode" {
+		t.Fatalf("unexpected copy response: %+v %v", result, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), "https://octoprint.internal") {
+		t.Fatalf("upstream URL was not filtered: %s (%v)", encoded, err)
+	}
+}
+
+func TestMoveFileToExistingFolderUsesEffectivePath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/files/local/projects/part.gcode" || r.Header.Get("X-Api-Key") != "test-secret" {
+			t.Errorf("unexpected move request: %s %s", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("move body: %v", err)
+			return
+		}
+		var command map[string]string
+		if err := json.Unmarshal(body, &command); err != nil || len(command) != 2 || command["command"] != "move" || command["destination"] != "archive" {
+			t.Errorf("unexpected move body: %s", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"name":"part.gcode","path":"archive/part.gcode","origin":"local","refs":{"resource":"https://octoprint.internal/api/files/local/archive/part.gcode"}}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).MoveFile(context.Background(), "projects/part.gcode", "archive")
+	if err != nil || result == nil || result.Path == nil || *result.Path != "archive/part.gcode" {
+		t.Fatalf("unexpected move response: %+v %v", result, err)
+	}
+}
+
+func TestFileMutationsRejectInvalidPathsWithoutRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 1024)
+
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`, "a\x01b", "\xff"} {
+		_, err := client.CreateFolder(context.Background(), name, "")
+		assertKind(t, err, ErrorInvalidPath)
+	}
+	for _, parent := range []string{".", "..", "a//b", "/a", "a/", `a\b`, "a\x00b", "a/../b"} {
+		_, err := client.CreateFolder(context.Background(), "parts", parent)
+		assertKind(t, err, ErrorInvalidPath)
+	}
+	for _, invalid := range []string{"", ".", "..", "../a.gcode", "a//b.gcode", "/a.gcode", "a/", `dir\file.gcode`, "dir/\x01a.gcode", "dir/./a.gcode"} {
+		_, err := client.CopyFile(context.Background(), invalid, "archive/a.gcode")
+		assertKind(t, err, ErrorInvalidPath)
+		_, err = client.CopyFile(context.Background(), "projects/a.gcode", invalid)
+		assertKind(t, err, ErrorInvalidPath)
+		_, err = client.MoveFile(context.Background(), invalid, "archive/a.gcode")
+		assertKind(t, err, ErrorInvalidPath)
+		_, err = client.MoveFile(context.Background(), "projects/a.gcode", invalid)
+		assertKind(t, err, ErrorInvalidPath)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("invalid paths sent %d requests", requests.Load())
+	}
+}
+
+func TestFileMutationsPreserveUpstreamConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"copy destination exists", func(client *Client) error {
+			_, err := client.CopyFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"move source in use", func(client *Client) error {
+			_, err := client.MoveFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"folder cannot be created", func(client *Client) error {
+			_, err := client.CreateFolder(context.Background(), "a.gcode", "archive")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "upstream-secret-detail")
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusConflict {
+				t.Fatalf("missing conflict status: %v", err)
+			}
+			if strings.Contains(err.Error(), "upstream-secret-detail") {
+				t.Fatal("upstream detail leaked")
+			}
+		})
+	}
+}
+
+func TestFileMutationsReturnSafeErrorsWithoutUpstreamBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"copy", func(client *Client) error {
+			_, err := client.CopyFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"move", func(client *Client) error {
+			_, err := client.MoveFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"folder", func(client *Client) error {
+			_, err := client.CreateFolder(context.Background(), "parts", "projects")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("missing upstream status: %v", err)
+			}
+			if err.Error() != "octoprint: http_status" {
+				t.Fatalf("unsafe error: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileMutationResponsesRejectInvalidPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		call func(*Client) error
+	}{
+		{"copy missing path", `{}`, func(client *Client) error {
+			_, err := client.CopyFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"move missing path", `{"name":"a.gcode"}`, func(client *Client) error {
+			_, err := client.MoveFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"copy URL path", `{"path":"https://evil.example/a.gcode"}`, func(client *Client) error {
+			_, err := client.CopyFile(context.Background(), "projects/a.gcode", "archive/a.gcode")
+			return err
+		}},
+		{"folder missing path", `{"done":true}`, func(client *Client) error {
+			_, err := client.CreateFolder(context.Background(), "parts", "projects")
+			return err
+		}},
+		{"folder URL path", `{"folder":{"path":"https://evil.example/parts"}}`, func(client *Client) error {
+			_, err := client.CreateFolder(context.Background(), "parts", "projects")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorInvalidJSON)
+		})
+	}
+}
 
 func TestPaddedAPIKeyIsRejectedBeforeRequest(t *testing.T) {
 	for _, key := range []string{" test-secret ", " test-secret", "test-secret ", "\ttest-secret\t"} {
