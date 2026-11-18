@@ -1,6 +1,8 @@
 package mcpserver
 
 import (
+	"encoding/json"
+
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
 )
 
@@ -67,6 +69,8 @@ type jobProgressOutput struct {
 
 type filesOutput struct {
 	Files []fileOutput `json:"files"`
+	Free  *int64       `json:"free,omitempty"`
+	Total *int64       `json:"total,omitempty"`
 }
 
 type uploadOutput struct {
@@ -85,6 +89,122 @@ type fileOutput struct {
 	Size     *int64       `json:"size,omitempty"`
 	Date     *int64       `json:"date,omitempty"`
 	Children []fileOutput `json:"children,omitempty"`
+}
+
+type versionOutput struct {
+	API    *string `json:"api,omitempty"`
+	Server *string `json:"server,omitempty"`
+	Text   *string `json:"text,omitempty"`
+}
+
+type serverOutput struct {
+	Version  *string         `json:"version,omitempty"`
+	Safemode json.RawMessage `json:"safemode,omitempty"`
+}
+
+type toolTemperaturesOutput struct {
+	Tools map[string]temperatureOutput `json:"tools"`
+}
+
+type bedTemperatureOutput struct {
+	Bed *temperatureOutput `json:"bed,omitempty"`
+}
+
+type chamberTemperatureOutput struct {
+	Chamber *temperatureOutput `json:"chamber,omitempty"`
+}
+
+type sdStateOutput struct {
+	Ready *bool `json:"ready,omitempty"`
+}
+
+type printerErrorOutput struct {
+	Consequence *string `json:"consequence,omitempty"`
+	Message     *string `json:"error,omitempty"`
+	FAQ         *string `json:"faq,omitempty"`
+	Reason      *string `json:"reason,omitempty"`
+}
+
+type profilesOutput struct {
+	Profiles map[string]printerProfileOutput `json:"profiles"`
+}
+
+type printerProfileOutput struct {
+	ID            *string                `json:"id,omitempty"`
+	Name          *string                `json:"name,omitempty"`
+	Color         *string                `json:"color,omitempty"`
+	Model         *string                `json:"model,omitempty"`
+	Default       *bool                  `json:"default,omitempty"`
+	Current       *bool                  `json:"current,omitempty"`
+	HeatedBed     *bool                  `json:"heatedBed,omitempty"`
+	HeatedChamber *bool                  `json:"heatedChamber,omitempty"`
+	Volume        *printerVolumeOutput   `json:"volume,omitempty"`
+	Extruder      *printerExtruderOutput `json:"extruder,omitempty"`
+}
+
+type printerVolumeOutput struct {
+	Width      *float64 `json:"width,omitempty"`
+	Depth      *float64 `json:"depth,omitempty"`
+	Height     *float64 `json:"height,omitempty"`
+	FormFactor *string  `json:"formFactor,omitempty"`
+	Origin     *string  `json:"origin,omitempty"`
+}
+
+type printerExtruderOutput struct {
+	Count          *int     `json:"count,omitempty"`
+	NozzleDiameter *float64 `json:"nozzleDiameter,omitempty"`
+	SharedNozzle   *bool    `json:"sharedNozzle,omitempty"`
+}
+
+type slicingOutput struct {
+	Profiles map[string][]string `json:"profiles"`
+}
+
+type timelapseOutput struct {
+	Config     timelapseConfigOutput  `json:"config"`
+	Files      []timelapseFileOutput  `json:"files"`
+	Unrendered []timelapseEntryOutput `json:"unrendered"`
+}
+
+type timelapseConfigOutput struct {
+	Type             *string  `json:"type,omitempty"`
+	PostRoll         *int64   `json:"postRoll,omitempty"`
+	FPS              *int64   `json:"fps,omitempty"`
+	RetractionZHop   *float64 `json:"retractionZHop,omitempty"`
+	MinDelay         *int64   `json:"minDelay,omitempty"`
+	Interval         *int64   `json:"interval,omitempty"`
+	RenderAfterPrint *string  `json:"renderAfterPrint,omitempty"`
+}
+
+type timelapseEntryOutput struct {
+	Name       *string `json:"name,omitempty"`
+	Size       *string `json:"size,omitempty"`
+	Bytes      *int64  `json:"bytes,omitempty"`
+	Date       *string `json:"date,omitempty"`
+	Recording  *bool   `json:"recording,omitempty"`
+	Rendering  *bool   `json:"rendering,omitempty"`
+	Processing *bool   `json:"processing,omitempty"`
+}
+
+type timelapseFileOutput struct {
+	Name  *string `json:"name,omitempty"`
+	Size  *string `json:"size,omitempty"`
+	Bytes *int64  `json:"bytes,omitempty"`
+	Date  *string `json:"date,omitempty"`
+}
+
+type settingsOutput struct {
+	Feature *settingsFeatureOutput `json:"feature,omitempty"`
+}
+
+type settingsFeatureOutput struct {
+	TemperatureGraph            *bool `json:"temperatureGraph,omitempty"`
+	SDSupport                   *bool `json:"sdSupport,omitempty"`
+	ModelSizeDetection          *bool `json:"modelSizeDetection,omitempty"`
+	PrintStartConfirmation      *bool `json:"printStartConfirmation,omitempty"`
+	PrintCancelConfirmation     *bool `json:"printCancelConfirmation,omitempty"`
+	UploadOverwriteConfirmation *bool `json:"uploadOverwriteConfirmation,omitempty"`
+	FileDeleteConfirmation      *bool `json:"fileDeleteConfirmation,omitempty"`
 }
 
 func newStatusOutput(connection *octoprint.ConnectionResponse, printer *octoprint.PrinterResponse) statusOutput {
@@ -189,11 +309,10 @@ func newJobProgressOutput(progress *octoprint.JobProgress) *jobProgressOutput {
 }
 
 func newFilesOutput(response *octoprint.FilesResponse) filesOutput {
-	files := make([]fileOutput, 0)
-	if response != nil {
-		files = newFileOutputs(response.Files)
+	if response == nil {
+		return filesOutput{Files: []fileOutput{}}
 	}
-	return filesOutput{Files: files}
+	return filesOutput{Files: newFileOutputs(response.Files), Free: response.Free, Total: response.Total}
 }
 
 func newUploadOutput(response *octoprint.UploadResponse) uploadOutput {
@@ -239,4 +358,181 @@ func newFileOutputValue(file octoprint.FileInfo) fileOutput {
 		Date:     file.Date,
 		Children: newFileOutputs(file.Children),
 	}
+}
+
+func newVersionOutput(response *octoprint.VersionResponse) versionOutput {
+	if response == nil {
+		return versionOutput{}
+	}
+	return versionOutput{API: response.API, Server: response.Server, Text: response.Text}
+}
+
+func newServerOutput(response *octoprint.ServerResponse) serverOutput {
+	if response == nil {
+		return serverOutput{}
+	}
+	return serverOutput{Version: response.Version, Safemode: response.Safemode}
+}
+
+func newToolTemperaturesOutput(response *octoprint.ToolTemperaturesResponse) toolTemperaturesOutput {
+	tools := make(map[string]temperatureOutput)
+	if response == nil {
+		return toolTemperaturesOutput{Tools: tools}
+	}
+	for name, temperature := range response.Tools {
+		tools[name] = newTemperatureOutput(temperature)
+	}
+	return toolTemperaturesOutput{Tools: tools}
+}
+
+func newBedTemperatureOutput(response *octoprint.BedTemperatureResponse) bedTemperatureOutput {
+	if response == nil || response.Bed == nil {
+		return bedTemperatureOutput{}
+	}
+	temperature := newTemperatureOutput(response.Bed)
+	return bedTemperatureOutput{Bed: &temperature}
+}
+
+func newChamberTemperatureOutput(response *octoprint.ChamberTemperatureResponse) chamberTemperatureOutput {
+	if response == nil || response.Chamber == nil {
+		return chamberTemperatureOutput{}
+	}
+	temperature := newTemperatureOutput(response.Chamber)
+	return chamberTemperatureOutput{Chamber: &temperature}
+}
+
+func newSDStateOutput(response *octoprint.SDStateResponse) sdStateOutput {
+	if response == nil {
+		return sdStateOutput{}
+	}
+	return sdStateOutput{Ready: response.Ready}
+}
+
+func newPrinterErrorOutput(response *octoprint.PrinterErrorResponse) printerErrorOutput {
+	if response == nil {
+		return printerErrorOutput{}
+	}
+	return printerErrorOutput{
+		Consequence: response.Consequence,
+		Message:     response.Message,
+		FAQ:         response.FAQ,
+		Reason:      response.Reason,
+	}
+}
+
+func newProfilesOutput(response *octoprint.ProfilesResponse) profilesOutput {
+	profiles := make(map[string]printerProfileOutput)
+	if response == nil {
+		return profilesOutput{Profiles: profiles}
+	}
+	for id, profile := range response.Profiles {
+		profiles[id] = newPrinterProfileOutput(profile)
+	}
+	return profilesOutput{Profiles: profiles}
+}
+
+func newPrinterProfileOutput(profile octoprint.PrinterProfile) printerProfileOutput {
+	return printerProfileOutput{
+		ID:            profile.ID,
+		Name:          profile.Name,
+		Color:         profile.Color,
+		Model:         profile.Model,
+		Default:       profile.Default,
+		Current:       profile.Current,
+		HeatedBed:     profile.HeatedBed,
+		HeatedChamber: profile.HeatedChamber,
+		Volume:        newPrinterVolumeOutput(profile.Volume),
+		Extruder:      newPrinterExtruderOutput(profile.Extruder),
+	}
+}
+
+func newPrinterVolumeOutput(volume *octoprint.PrinterVolume) *printerVolumeOutput {
+	if volume == nil {
+		return nil
+	}
+	return &printerVolumeOutput{
+		Width:      volume.Width,
+		Depth:      volume.Depth,
+		Height:     volume.Height,
+		FormFactor: volume.FormFactor,
+		Origin:     volume.Origin,
+	}
+}
+
+func newPrinterExtruderOutput(extruder *octoprint.PrinterExtruder) *printerExtruderOutput {
+	if extruder == nil {
+		return nil
+	}
+	return &printerExtruderOutput{
+		Count:          extruder.Count,
+		NozzleDiameter: extruder.NozzleDiameter,
+		SharedNozzle:   extruder.SharedNozzle,
+	}
+}
+
+func newSlicingOutput(response *octoprint.SlicingResponse) slicingOutput {
+	profiles := make(map[string][]string)
+	if response == nil {
+		return slicingOutput{Profiles: profiles}
+	}
+	for slicer, names := range response.Profiles {
+		profiles[slicer] = names
+	}
+	return slicingOutput{Profiles: profiles}
+}
+
+func newTimelapseOutput(response *octoprint.TimelapseResponse) timelapseOutput {
+	files := make([]timelapseFileOutput, 0)
+	unrendered := make([]timelapseEntryOutput, 0)
+	if response == nil {
+		return timelapseOutput{Config: timelapseConfigOutput{}, Files: files, Unrendered: unrendered}
+	}
+	for _, timelapse := range response.Unrendered {
+		unrendered = append(unrendered, timelapseEntryOutput{
+			Name:       timelapse.Name,
+			Size:       timelapse.Size,
+			Bytes:      timelapse.Bytes,
+			Date:       timelapse.Date,
+			Recording:  timelapse.Recording,
+			Rendering:  timelapse.Rendering,
+			Processing: timelapse.Processing,
+		})
+	}
+	for _, file := range response.Files {
+		files = append(files, timelapseFileOutput{
+			Name:  file.Name,
+			Size:  file.Size,
+			Bytes: file.Bytes,
+			Date:  file.Date,
+		})
+	}
+	return timelapseOutput{
+		Config: timelapseConfigOutput{
+			Type:             response.Config.Type,
+			PostRoll:         response.Config.PostRoll,
+			FPS:              response.Config.FPS,
+			RetractionZHop:   response.Config.RetractionZHop,
+			MinDelay:         response.Config.MinDelay,
+			Interval:         response.Config.Interval,
+			RenderAfterPrint: response.Config.RenderAfterPrint,
+		},
+		Files:      files,
+		Unrendered: unrendered,
+	}
+}
+
+func newSettingsOutput(response *octoprint.SettingsResponse) settingsOutput {
+	if response == nil || response.Feature == nil {
+		return settingsOutput{}
+	}
+	feature := response.Feature
+	return settingsOutput{Feature: &settingsFeatureOutput{
+		TemperatureGraph:            feature.TemperatureGraph,
+		SDSupport:                   feature.SDSupport,
+		ModelSizeDetection:          feature.ModelSizeDetection,
+		PrintStartConfirmation:      feature.PrintStartConfirmation,
+		PrintCancelConfirmation:     feature.PrintCancelConfirmation,
+		UploadOverwriteConfirmation: feature.UploadOverwriteConfirmation,
+		FileDeleteConfirmation:      feature.FileDeleteConfirmation,
+	}}
 }
