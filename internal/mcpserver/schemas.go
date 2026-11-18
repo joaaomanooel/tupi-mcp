@@ -132,6 +132,34 @@ var uploadOutputSchema = json.RawMessage(`{
   "$defs": {` + fileSchemaDefinition + `}
 }`)
 
+var folderOutputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "folder": {"$ref": "#/$defs/file"},
+    "done": {"type": "boolean"}
+  },
+  "additionalProperties": false,
+  "$defs": {` + fileSchemaDefinition + `}
+}`)
+
+var fileCommandOutputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "path": {"type": "string"},
+    "origin": {"type": "string"}
+  },
+  "additionalProperties": false
+}`)
+
+var commandOutputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "done": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}`)
+
 const temperatureSchemaDefinition = `"temperature": {
   "type": "object",
   "properties": {

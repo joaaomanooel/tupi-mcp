@@ -29,6 +29,7 @@ const (
 	ErrorSensitiveResponse ErrorKind = "sensitive_response"
 	ErrorInvalidUpload     ErrorKind = "invalid_upload"
 	ErrorRequestTooLarge   ErrorKind = "request_too_large"
+	ErrorInvalidPath       ErrorKind = "invalid_path"
 )
 
 const MaxGCodeUploadBytes = 8 << 20
@@ -52,6 +53,17 @@ type Client struct {
 	apiKey       string
 	httpClient   http.Client
 	maxBodyBytes int64
+}
+
+type FolderResponse struct {
+	Folder *FileInfo `json:"folder"`
+	Done   *bool     `json:"done"`
+}
+
+type FileCommandResponse struct {
+	Name   *string `json:"name"`
+	Path   *string `json:"path"`
+	Origin *string `json:"origin"`
 }
 
 func NewClient(baseURL, apiKey string, httpClient *http.Client, maxBodyBytes int64, allowInsecureHTTP bool) (*Client, error) {
@@ -193,6 +205,144 @@ func (c *Client) UploadGCode(ctx context.Context, filename string, contents []by
 	return uploaded, nil
 }
 
+func (c *Client) CreateFolder(ctx context.Context, name, parent string) (*FolderResponse, error) {
+	if !validLocalName(name) || parent != "" && !validLocalPath(parent) {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("foldername", name); err != nil {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+	if parent != "" {
+		if err := writer.WriteField("path", parent); err != nil {
+			return nil, &Error{Kind: ErrorInvalidPath}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+
+	responseBody, err := c.post(ctx, "/api/files/local", body.Bytes(), writer.FormDataContentType())
+	if err != nil {
+		return nil, err
+	}
+	var folder *FolderResponse
+	if err := json.Unmarshal(responseBody, &folder); err != nil || folder == nil || folder.Folder == nil || folder.Folder.Path == nil || !validLocalPath(*folder.Folder.Path) {
+		return nil, &Error{Kind: ErrorInvalidJSON}
+	}
+	return folder, nil
+}
+
+func (c *Client) CopyFile(ctx context.Context, source, destination string) (*FileCommandResponse, error) {
+	return c.fileCommand(ctx, "copy", source, destination)
+}
+
+func (c *Client) MoveFile(ctx context.Context, source, destination string) (*FileCommandResponse, error) {
+	return c.fileCommand(ctx, "move", source, destination)
+}
+
+func (c *Client) fileCommand(ctx context.Context, command, source, destination string) (*FileCommandResponse, error) {
+	if !validLocalPath(source) || !validLocalPath(destination) {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+
+	payload, err := json.Marshal(struct {
+		Command     string `json:"command"`
+		Destination string `json:"destination"`
+	}{Command: command, Destination: destination})
+	if err != nil {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+
+	responseBody, err := c.post(ctx, "/api/files/local/"+source, payload, "application/json")
+	if err != nil {
+		return nil, err
+	}
+	var result *FileCommandResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil || result == nil || result.Path == nil || !validLocalPath(*result.Path) {
+		return nil, &Error{Kind: ErrorInvalidJSON}
+	}
+	return result, nil
+}
+
+func (c *Client) SelectFile(ctx context.Context, filename string) error {
+	if !validLocalPath(filename) {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	payload, err := json.Marshal(struct {
+		Command string `json:"command"`
+		Print   bool   `json:"print"`
+	}{Command: "select"})
+	if err != nil {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	return c.sendNoContent(ctx, http.MethodPost, "/api/files/local/"+filename, payload, "application/json")
+}
+
+func (c *Client) DeleteFile(ctx context.Context, filename string) error {
+	if !validLocalPath(filename) {
+		return &Error{Kind: ErrorInvalidPath}
+	}
+	return c.sendNoContent(ctx, http.MethodDelete, "/api/files/local/"+filename, nil, "")
+}
+
+func (c *Client) SliceFile(ctx context.Context, filename, destination string) (*FileCommandResponse, error) {
+	if !validLocalPath(filename) || !validLocalPath(destination) {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+	payload, err := json.Marshal(struct {
+		Command     string `json:"command"`
+		Destination string `json:"destination"`
+		Select      bool   `json:"select"`
+		Print       bool   `json:"print"`
+	}{Command: "slice", Destination: destination})
+	if err != nil {
+		return nil, &Error{Kind: ErrorInvalidPath}
+	}
+	responseBody, err := c.post(ctx, "/api/files/local/"+filename, payload, "application/json")
+	if err != nil {
+		return nil, err
+	}
+	var result *FileCommandResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil || result == nil || result.Path == nil || !validLocalPath(*result.Path) {
+		return nil, &Error{Kind: ErrorInvalidJSON}
+	}
+	return result, nil
+}
+
+func (c *Client) StartJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "start", "")
+}
+
+func (c *Client) PauseJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "pause", "pause")
+}
+
+func (c *Client) ResumeJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "pause", "resume")
+}
+
+func (c *Client) RestartJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "restart", "")
+}
+
+func (c *Client) CancelJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "cancel", "")
+}
+
+func (c *Client) sendJobCommand(ctx context.Context, command, action string) error {
+	payload, err := json.Marshal(struct {
+		Command string `json:"command"`
+		Action  string `json:"action,omitempty"`
+	}{Command: command, Action: action})
+	if err != nil {
+		return &Error{Kind: ErrorInvalidJSON}
+	}
+	return c.sendNoContent(ctx, http.MethodPost, "/api/job", payload, "application/json")
+}
+
 func ValidGCodeContents(contents []byte) bool {
 	for len(contents) > 0 {
 		character, size := utf8.DecodeRune(contents)
@@ -208,6 +358,61 @@ func validGCodeFilename(filename string) bool {
 	extension := path.Ext(filename)
 	basename := strings.TrimSuffix(filename, extension)
 	return filename != "" && len(filename) <= 255 && filename == strings.TrimSpace(filename) && !strings.ContainsAny(filename, "/\\") && !strings.ContainsFunc(filename, unicode.IsControl) && strings.EqualFold(extension, ".gcode") && basename != "" && basename != "." && basename != ".."
+}
+
+func validLocalPath(value string) bool {
+	if value == "" || !utf8.ValidString(value) || strings.Contains(value, `\`) || strings.ContainsFunc(value, unicode.IsControl) {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func validLocalName(name string) bool {
+	return name != "" && !strings.Contains(name, "/") && validLocalPath(name)
+}
+
+func (c *Client) post(ctx context.Context, endpoint string, body []byte, contentType string) ([]byte, error) {
+	response, err := c.send(ctx, http.MethodPost, endpoint, body, contentType)
+	if err != nil {
+		return nil, err
+	}
+	return c.readResponse(ctx, response)
+}
+
+func (c *Client) sendNoContent(ctx context.Context, method, endpoint string, body []byte, contentType string) error {
+	response, err := c.send(ctx, method, endpoint, body, contentType)
+	if err != nil {
+		return err
+	}
+	return c.readNoContent(ctx, response)
+}
+
+func (c *Client) send(ctx context.Context, method, endpoint string, body []byte, contentType string) (*http.Response, error) {
+	target := c.baseURL
+	target.Path = strings.TrimRight(target.Path, "/") + endpoint
+	target.RawPath = ""
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
+	if err != nil {
+		return nil, safeTransportError(ctx, err)
+	}
+	request.Header.Set("X-Api-Key", c.apiKey)
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, safeTransportError(ctx, err)
+	}
+	return response, nil
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
@@ -229,6 +434,18 @@ func (c *Client) getWithQuery(ctx context.Context, endpoint string, query url.Va
 		return nil, safeTransportError(ctx, err)
 	}
 	return c.readResponse(ctx, response)
+}
+
+func (c *Client) readNoContent(ctx context.Context, response *http.Response) error {
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes))
+		return &Error{Kind: ErrorHTTPStatus, StatusCode: response.StatusCode}
+	}
+	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes)); err != nil {
+		return safeTransportError(ctx, err)
+	}
+	return nil
 }
 
 func (c *Client) readResponse(ctx context.Context, response *http.Response) ([]byte, error) {

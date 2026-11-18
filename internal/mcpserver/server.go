@@ -38,10 +38,21 @@ type ExtendedReader interface {
 	Settings(ctx context.Context) (*octoprint.SettingsResponse, error)
 }
 
-func NewServer(reader Reader) *mcp.Server {
+func NewServer(reader Reader, enabledTools []string) (*mcp.Server, error) {
+	enabled, err := enabledToolSet(enabledTools)
+	if err != nil {
+		return nil, err
+	}
+	instructions := "OctoPrint access provides read-only status and diagnostic tools plus one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."
+	if anyEnabled(enabled, fileTools...) {
+		instructions += " Enabled file-management tools operate on OctoPrint local storage and require the permissions stated in each tool description."
+	}
+	if anyEnabled(enabled, jobTools...) {
+		instructions += " Enabled job-control tools act on the current job and require the PRINT permission."
+	}
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: serverName, Version: serverVersion},
-		&mcp.ServerOptions{Instructions: "OctoPrint access provides read-only status and diagnostic tools plus one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."},
+		&mcp.ServerOptions{Instructions: instructions},
 	)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "printer_get_status",
@@ -125,7 +136,17 @@ func NewServer(reader Reader) *mcp.Server {
 		Description:  "Upload UTF-8 G-code text to OctoPrint local storage without selecting or printing it, and refuse to overwrite an existing file. Accepts a filename ending in .gcode and at most 8 MiB of contents.",
 		OutputSchema: uploadOutputSchema,
 	}, uploadHandler(reader))
-	return server
+	if manager, ok := reader.(FileManager); ok {
+		addFileTools(server, manager, enabled)
+	} else if anyEnabled(enabled, fileTools...) {
+		return nil, errors.New("mcpserver: enabled file tools require a file manager")
+	}
+	if controller, ok := reader.(JobController); ok {
+		addJobTools(server, controller, enabled)
+	} else if anyEnabled(enabled, jobTools...) {
+		return nil, errors.New("mcpserver: enabled job tools require a job controller")
+	}
+	return server, nil
 }
 
 type uploadInput struct {
