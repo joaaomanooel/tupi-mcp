@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/joaaomanooel/tupi-mcp/internal/config"
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
 )
 
@@ -99,6 +101,16 @@ func (m *printerMock) resetRequests() {
 
 type readerStub struct {
 	err error
+}
+
+type uploadRecorder struct {
+	readerStub
+	called bool
+}
+
+func (r *uploadRecorder) UploadGCode(context.Context, string, []byte) (*octoprint.UploadResponse, error) {
+	r.called = true
+	return &octoprint.UploadResponse{}, nil
 }
 
 func (r readerStub) Connection(context.Context) (*octoprint.ConnectionResponse, error) {
@@ -185,7 +197,7 @@ func newIntegrationServer(t *testing.T) (*printerMock, testServer, *mcp.ClientSe
 	if err != nil {
 		t.Fatalf("octoprint client: %v", err)
 	}
-	setup := startMCPServer(t, client, nil, 10<<20)
+	setup := startMCPServer(t, client, nil, config.DefaultMaxRequestBodyBytes)
 	return mock, setup, connectSession(t, setup)
 }
 
@@ -263,6 +275,7 @@ func assertUploadInputSchema(t *testing.T, tool *mcp.Tool) {
 	var schema struct {
 		Properties           map[string]json.RawMessage `json:"properties"`
 		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Required             []string                   `json:"required"`
 	}
 	encoded, err := json.Marshal(tool.InputSchema)
 	if err != nil {
@@ -276,6 +289,23 @@ func assertUploadInputSchema(t *testing.T, tool *mcp.Tool) {
 	}
 	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
 		t.Errorf("upload input schema allows undeclared arguments: %s", encoded)
+	}
+	sort.Strings(schema.Required)
+	if len(schema.Required) != 2 || schema.Required[0] != "contents" || schema.Required[1] != "filename" {
+		t.Errorf("upload input required = %v, want [filename contents]", schema.Required)
+	}
+}
+
+func TestUploadHandlerRejectsOversizeBeforeCallingReader(t *testing.T) {
+	reader := &uploadRecorder{}
+	handler := uploadHandler(reader)
+	contents := strings.Repeat("G28\n", octoprint.MaxGCodeUploadBytes/4) + "G"
+	_, _, err := handler(context.Background(), nil, uploadInput{Filename: "large.gcode", Contents: contents})
+	if err == nil || !strings.Contains(err.Error(), string(octoprint.ErrorRequestTooLarge)) {
+		t.Fatalf("unexpected oversized upload error: %v", err)
+	}
+	if reader.called {
+		t.Error("reader received an oversized upload")
 	}
 }
 
@@ -374,8 +404,8 @@ func TestToolInvocation(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("upload method = %s, want POST", r.Method)
 		}
-		if r.FormValue("select") != "false" || r.FormValue("print") != "false" {
-			t.Errorf("upload flags select=%q print=%q", r.FormValue("select"), r.FormValue("print"))
+		if r.FormValue("select") != "false" || r.FormValue("print") != "false" || r.FormValue("noOverwrite") != "true" {
+			t.Errorf("upload flags select=%q print=%q noOverwrite=%q", r.FormValue("select"), r.FormValue("print"), r.FormValue("noOverwrite"))
 		}
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -408,6 +438,39 @@ func TestToolInvocation(t *testing.T) {
 		if request != expected[index] {
 			t.Fatalf("requests = %v, want %v", requests, expected)
 		}
+	}
+}
+
+func TestUploadGCodeAtMaximumSize(t *testing.T) {
+	mock, _, session := newIntegrationServer(t)
+	mock.setRoute("/api/files/local", func(w http.ResponseWriter, r *http.Request) {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("upload file: %v", err)
+			return
+		}
+		defer file.Close()
+		written, err := io.Copy(io.Discard, file)
+		if err != nil || written != octoprint.MaxGCodeUploadBytes || header.Size != octoprint.MaxGCodeUploadBytes {
+			t.Errorf("uploaded size = %d, header size = %d, error = %v", written, header.Size, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"files":{"local":{"name":"large.gcode","path":"large.gcode","origin":"local"}},"done":true,"effectiveSelect":false,"effectivePrint":false}`)
+	})
+	contents := strings.Repeat("G28\n", octoprint.MaxGCodeUploadBytes/4) + strings.Repeat("G", octoprint.MaxGCodeUploadBytes%4)
+	result := callTool(t, session, "printer_upload_gcode", map[string]any{"filename": "large.gcode", "contents": contents})
+	if result == nil || result.IsError {
+		t.Fatalf("maximum-size upload failed: %s", contentText(result))
+	}
+	tooLargeSize := octoprint.MaxGCodeUploadBytes + 1
+	tooLarge := strings.Repeat("G28\n", tooLargeSize/4) + strings.Repeat("G", tooLargeSize%4)
+	rejected := callTool(t, session, "printer_upload_gcode", map[string]any{"filename": "large.gcode", "contents": tooLarge})
+	if rejected == nil || !rejected.IsError || !strings.Contains(contentText(rejected), string(octoprint.ErrorRequestTooLarge)) {
+		t.Fatalf("oversized upload was not rejected safely: %s", contentText(rejected))
+	}
+	if requests := mock.recordedRequests(); len(requests) != 1 {
+		t.Fatalf("oversized upload reached OctoPrint: %v", requests)
 	}
 }
 

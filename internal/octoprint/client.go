@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type ErrorKind string
@@ -98,6 +99,9 @@ func (c *Client) UploadGCode(ctx context.Context, filename string, contents []by
 	if len(contents) > MaxGCodeUploadBytes {
 		return nil, &Error{Kind: ErrorRequestTooLarge}
 	}
+	if !ValidGCodeContents(contents) {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -112,6 +116,9 @@ func (c *Client) UploadGCode(ctx context.Context, filename string, contents []by
 		return nil, &Error{Kind: ErrorInvalidUpload}
 	}
 	if err := writer.WriteField("print", "false"); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if err := writer.WriteField("noOverwrite", "true"); err != nil {
 		return nil, &Error{Kind: ErrorInvalidUpload}
 	}
 	if err := writer.Close(); err != nil {
@@ -142,8 +149,21 @@ func (c *Client) UploadGCode(ctx context.Context, filename string, contents []by
 	return uploaded, nil
 }
 
+func ValidGCodeContents(contents []byte) bool {
+	for len(contents) > 0 {
+		character, size := utf8.DecodeRune(contents)
+		if character == utf8.RuneError && size == 1 || unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return false
+		}
+		contents = contents[size:]
+	}
+	return true
+}
+
 func validGCodeFilename(filename string) bool {
-	return filename != "" && len(filename) <= 255 && filename == strings.TrimSpace(filename) && !strings.ContainsAny(filename, "/\\") && !strings.ContainsFunc(filename, unicode.IsControl) && strings.EqualFold(path.Ext(filename), ".gcode") && filename != ".gcode"
+	extension := path.Ext(filename)
+	basename := strings.TrimSuffix(filename, extension)
+	return filename != "" && len(filename) <= 255 && filename == strings.TrimSpace(filename) && !strings.ContainsAny(filename, "/\\") && !strings.ContainsFunc(filename, unicode.IsControl) && strings.EqualFold(extension, ".gcode") && basename != "" && basename != "." && basename != ".."
 }
 
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {

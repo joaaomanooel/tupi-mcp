@@ -24,7 +24,7 @@ const (
 	OctoPrintMaxResponseVariable       = "TUPI_OCTOPRINT_MAX_RESPONSE_BYTES"
 
 	DefaultListenAddress        = "127.0.0.1:8080"
-	DefaultMaxRequestBodyBytes  = 10 << 20
+	DefaultMaxRequestBodyBytes  = 18 << 20
 	DefaultOctoPrintTimeout     = 10 * time.Second
 	DefaultMaxResponseBodyBytes = 1 << 20
 )

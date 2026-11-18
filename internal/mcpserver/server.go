@@ -51,7 +51,7 @@ func NewServer(reader Reader) *mcp.Server {
 	}, filesHandler(reader))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "printer_upload_gcode",
-		Description:  "Upload a G-code file to OctoPrint local storage without selecting or printing it. Accepts a filename ending in .gcode and at most 8 MiB of contents.",
+		Description:  "Upload UTF-8 G-code text to OctoPrint local storage without selecting or printing it, and refuse to overwrite an existing file. Accepts a filename ending in .gcode and at most 8 MiB of contents.",
 		OutputSchema: uploadOutputSchema,
 	}, uploadHandler(reader))
 	return server
@@ -59,12 +59,19 @@ func NewServer(reader Reader) *mcp.Server {
 
 type uploadInput struct {
 	Filename string `json:"filename" jsonschema:"G-code filename ending in .gcode"`
-	Contents string `json:"contents" jsonschema:"G-code file contents, maximum 8 MiB"`
+	Contents string `json:"contents" jsonschema:"UTF-8 G-code text, maximum 8 MiB"`
 }
 
 func uploadHandler(reader Reader) mcp.ToolHandlerFor[uploadInput, uploadOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, input uploadInput) (*mcp.CallToolResult, uploadOutput, error) {
-		response, err := reader.UploadGCode(ctx, input.Filename, []byte(input.Contents))
+		if len(input.Contents) > octoprint.MaxGCodeUploadBytes {
+			return nil, uploadOutput{}, toolError(&octoprint.Error{Kind: octoprint.ErrorRequestTooLarge})
+		}
+		contents := []byte(input.Contents)
+		if !octoprint.ValidGCodeContents(contents) {
+			return nil, uploadOutput{}, toolError(&octoprint.Error{Kind: octoprint.ErrorInvalidUpload})
+		}
+		response, err := reader.UploadGCode(ctx, input.Filename, contents)
 		if err != nil {
 			return nil, uploadOutput{}, toolError(err)
 		}
