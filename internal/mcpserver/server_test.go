@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	testToken  = "test-mcp-token-with-at-least-thirty-two-bytes"
 	testAPIKey = "test-api-key"
 )
 
@@ -134,9 +133,8 @@ func (r readerStub) UploadGCode(context.Context, string, []byte) (*octoprint.Upl
 }
 
 type testServer struct {
-	url   string
-	host  string
-	token string
+	url  string
+	host string
 }
 
 func startMCPServer(t *testing.T, reader Reader, origins []string, maxRequestBodyBytes int64) testServer {
@@ -148,7 +146,6 @@ func startMCPServer(t *testing.T, reader Reader, origins []string, maxRequestBod
 	host := listener.Addr().String()
 	handler, err := NewHandler(Options{
 		Server:              NewServer(reader),
-		Token:               testToken,
 		AllowedHosts:        []string{host},
 		AllowedOrigins:      origins,
 		MaxRequestBodyBytes: maxRequestBodyBytes,
@@ -159,14 +156,13 @@ func startMCPServer(t *testing.T, reader Reader, origins []string, maxRequestBod
 	httpServer := &httptest.Server{Listener: listener, Config: &http.Server{Handler: handler}}
 	httpServer.Start()
 	t.Cleanup(httpServer.Close)
-	return testServer{url: httpServer.URL, host: host, token: testToken}
+	return testServer{url: httpServer.URL, host: host}
 }
 
 func connectSession(t *testing.T, setup testServer) *mcp.ClientSession {
 	t.Helper()
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:             setup.url + "/mcp",
-		HTTPClient:           &http.Client{Transport: &bearerTransport{token: setup.token}},
 		DisableStandaloneSSE: true,
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "tupi-mcp-test", Version: "0.0.0"}, nil)
@@ -178,16 +174,6 @@ func connectSession(t *testing.T, setup testServer) *mcp.ClientSession {
 		_ = session.Close()
 	})
 	return session
-}
-
-type bearerTransport struct {
-	token string
-}
-
-func (t *bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
-	clone.Header.Set("Authorization", bearerPrefix+t.token)
-	return http.DefaultTransport.RoundTrip(clone)
 }
 
 func newIntegrationServer(t *testing.T) (*printerMock, testServer, *mcp.ClientSession) {
@@ -573,7 +559,7 @@ func TestToolErrorsAreSafeAndServerKeepsServing(t *testing.T) {
 				t.Fatalf("expected tool error, got %+v", result)
 			}
 			message := contentText(result)
-			for _, forbidden := range []string{testAPIKey, testToken, "upstream-secret-detail", "/api/", "/"} {
+			for _, forbidden := range []string{testAPIKey, "upstream-secret-detail", "/api/", "/"} {
 				if contains(message, forbidden) {
 					t.Errorf("tool error message %q discloses %q", message, forbidden)
 				}

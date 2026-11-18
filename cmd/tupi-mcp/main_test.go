@@ -40,7 +40,7 @@ func TestRunStopsAfterContextCancellation(t *testing.T) {
 	octoprint := httptest.NewServer(http.NotFoundHandler())
 	defer octoprint.Close()
 	address := unusedLoopbackAddress(t)
-	token := setRunEnvironment(t, address, octoprint.URL)
+	setRunEnvironment(t, address, octoprint.URL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -50,8 +50,7 @@ func TestRunStopsAfterContextCancellation(t *testing.T) {
 	}()
 	waitForListener(t, done, address)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint:   "http://" + address + "/mcp",
-		HTTPClient: &http.Client{Transport: runBearerTransport{token: token}},
+		Endpoint: "http://" + address + "/mcp",
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "tupi-mcp-test", Version: "0.0.0"}, nil)
 	session, err := client.Connect(context.Background(), transport, nil)
@@ -71,24 +70,11 @@ func TestRunStopsAfterContextCancellation(t *testing.T) {
 	}
 }
 
-func setRunEnvironment(t *testing.T, address, octoprintURL string) string {
+func setRunEnvironment(t *testing.T, address, octoprintURL string) {
 	t.Helper()
-	token := strings.Repeat("a", 32)
-	t.Setenv("TUPI_MCP_TOKEN", token)
 	t.Setenv("TUPI_MCP_LISTEN_ADDRESS", address)
 	t.Setenv("TUPI_OCTOPRINT_BASE_URL", octoprintURL)
 	t.Setenv("TUPI_OCTOPRINT_API_KEY", "test-api-key")
-	return token
-}
-
-type runBearerTransport struct {
-	token string
-}
-
-func (t runBearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
-	clone.Header.Set("Authorization", "Bearer "+t.token)
-	return http.DefaultTransport.RoundTrip(clone)
 }
 
 func unusedLoopbackAddress(t *testing.T) string {

@@ -17,7 +17,6 @@ func lookupFrom(values map[string]string) func(string) (string, bool) {
 
 func validValues() map[string]string {
 	return map[string]string{
-		TokenVariable:           "test-mcp-token-with-at-least-thirty-two-bytes",
 		OctoPrintURLVariable:    "http://127.0.0.1:5000",
 		OctoPrintAPIKeyVariable: "test-api-key",
 	}
@@ -91,7 +90,7 @@ func TestLoadOverrides(t *testing.T) {
 }
 
 func TestLoadMissingRequiredValues(t *testing.T) {
-	for _, name := range []string{TokenVariable, OctoPrintURLVariable, OctoPrintAPIKeyVariable} {
+	for _, name := range []string{OctoPrintURLVariable, OctoPrintAPIKeyVariable} {
 		t.Run(name, func(t *testing.T) {
 			values := validValues()
 			delete(values, name)
@@ -99,19 +98,6 @@ func TestLoadMissingRequiredValues(t *testing.T) {
 			_, err := Load(lookupFrom(values))
 
 			assertConfigError(t, err, name)
-		})
-	}
-}
-
-func TestLoadInvalidToken(t *testing.T) {
-	for _, token := range []string{" ", " padded", "padded ", "with space", "with\ttab"} {
-		t.Run(token, func(t *testing.T) {
-			values := validValues()
-			values[TokenVariable] = token
-
-			_, err := Load(lookupFrom(values))
-
-			assertConfigError(t, err, TokenVariable)
 		})
 	}
 }
@@ -127,15 +113,6 @@ func TestLoadRequiredValuesRejectWhitespace(t *testing.T) {
 			assertConfigError(t, err, name)
 		})
 	}
-}
-
-func TestLoadShortToken(t *testing.T) {
-	values := validValues()
-	values[TokenVariable] = "short-token"
-
-	_, err := Load(lookupFrom(values))
-
-	assertConfigError(t, err, TokenVariable)
 }
 
 func TestLoadListener(t *testing.T) {
@@ -226,7 +203,7 @@ func TestLoadIgnoresUnknownValues(t *testing.T) {
 
 	settings, err := Load(lookupFrom(values))
 
-	if err != nil || settings.MCPToken != "test-mcp-token-with-at-least-thirty-two-bytes" {
+	if err != nil || settings.OctoPrintBaseURL != "http://127.0.0.1:5000" {
 		t.Fatalf("unexpected result: %+v %v", settings, err)
 	}
 }

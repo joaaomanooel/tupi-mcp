@@ -58,7 +58,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	server := mcpserver.NewServer(client)
 	handler, err := mcpserver.NewHandler(mcpserver.Options{
 		Server:              server,
-		Token:               settings.MCPToken,
 		AllowedHosts:        settings.AllowedHosts,
 		AllowedOrigins:      settings.AllowedOrigins,
 		MaxRequestBodyBytes: settings.MaxRequestBodyBytes,

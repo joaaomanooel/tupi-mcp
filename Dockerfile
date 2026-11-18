@@ -15,9 +15,13 @@ RUN set -eu; \
         GOOS="$TARGETOS" GOARCH="$TARGETARCH" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tupi-mcp ./cmd/tupi-mcp; \
     fi
 
-FROM alpine:3.24
+FROM alpine:3.24 AS certificates
 
-RUN apk upgrade --no-cache && apk add --no-cache ca-certificates && addgroup -S -g 65532 app && adduser -S -D -H -u 65532 -G app app
+RUN apk add --no-cache ca-certificates
+
+FROM scratch
+
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/tupi-mcp /tupi-mcp
 
 USER 65532:65532

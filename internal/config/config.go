@@ -6,12 +6,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/joaaomanooel/tupi-mcp/internal/security"
 )
 
 const (
-	TokenVariable                      = "TUPI_MCP_TOKEN"
 	ListenAddressVariable              = "TUPI_MCP_LISTEN_ADDRESS"
 	AllowNonLoopbackVariable           = "TUPI_MCP_ALLOW_NON_LOOPBACK"
 	AllowedHostsVariable               = "TUPI_MCP_ALLOWED_HOSTS"
@@ -38,7 +35,6 @@ func (e *Error) Error() string {
 }
 
 type Config struct {
-	MCPToken                   string
 	ListenAddress              string
 	AllowedHosts               []string
 	AllowedOrigins             []string
@@ -53,10 +49,6 @@ type Config struct {
 type lookupFunc func(string) (string, bool)
 
 func Load(lookup lookupFunc) (*Config, error) {
-	token, err := loadToken(lookup)
-	if err != nil {
-		return nil, err
-	}
 	listenAddress, allowedHosts, err := loadListener(lookup)
 	if err != nil {
 		return nil, err
@@ -90,7 +82,6 @@ func Load(lookup lookupFunc) (*Config, error) {
 		return nil, err
 	}
 	return &Config{
-		MCPToken:                   token,
 		ListenAddress:              listenAddress,
 		AllowedHosts:               allowedHosts,
 		AllowedOrigins:             allowedOrigins,
@@ -101,17 +92,6 @@ func Load(lookup lookupFunc) (*Config, error) {
 		OctoPrintTimeout:           timeout,
 		OctoPrintMaxBodyBytes:      maxResponseBytes,
 	}, nil
-}
-
-func loadToken(lookup lookupFunc) (string, error) {
-	token, err := loadRequired(lookup, TokenVariable)
-	if err != nil {
-		return "", err
-	}
-	if len(token) < security.MinimumTokenLength {
-		return "", &Error{Message: TokenVariable + " must contain at least " + strconv.Itoa(security.MinimumTokenLength) + " bytes"}
-	}
-	return token, nil
 }
 
 func loadListener(lookup lookupFunc) (string, []string, error) {
