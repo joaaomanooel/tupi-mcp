@@ -312,6 +312,37 @@ func (c *Client) SliceFile(ctx context.Context, filename, destination string) (*
 	return result, nil
 }
 
+func (c *Client) StartJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "start", "")
+}
+
+func (c *Client) PauseJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "pause", "pause")
+}
+
+func (c *Client) ResumeJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "pause", "resume")
+}
+
+func (c *Client) RestartJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "restart", "")
+}
+
+func (c *Client) CancelJob(ctx context.Context) error {
+	return c.sendJobCommand(ctx, "cancel", "")
+}
+
+func (c *Client) sendJobCommand(ctx context.Context, command, action string) error {
+	payload, err := json.Marshal(struct {
+		Command string `json:"command"`
+		Action  string `json:"action,omitempty"`
+	}{Command: command, Action: action})
+	if err != nil {
+		return &Error{Kind: ErrorInvalidJSON}
+	}
+	return c.sendNoContent(ctx, http.MethodPost, "/api/job", payload, "application/json")
+}
+
 func ValidGCodeContents(contents []byte) bool {
 	for len(contents) > 0 {
 		character, size := utf8.DecodeRune(contents)

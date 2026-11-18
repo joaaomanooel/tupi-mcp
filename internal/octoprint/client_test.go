@@ -1110,6 +1110,163 @@ func TestSliceFileResponseRequiresLocalPath(t *testing.T) {
 	}
 }
 
+func TestJobCommandsSendExactRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		action  string
+		call    func(*Client) error
+	}{
+		{"start", "start", "", func(client *Client) error {
+			return client.StartJob(context.Background())
+		}},
+		{"pause", "pause", "pause", func(client *Client) error {
+			return client.PauseJob(context.Background())
+		}},
+		{"resume", "pause", "resume", func(client *Client) error {
+			return client.ResumeJob(context.Background())
+		}},
+		{"restart", "restart", "", func(client *Client) error {
+			return client.RestartJob(context.Background())
+		}},
+		{"cancel", "cancel", "", func(client *Client) error {
+			return client.CancelJob(context.Background())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/api/job" {
+					t.Errorf("unexpected job request: %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+					t.Error("unexpected credentials")
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("job body: %v", err)
+					return
+				}
+				var command map[string]string
+				if err := json.Unmarshal(body, &command); err != nil {
+					t.Errorf("unexpected job body: %s", body)
+					return
+				}
+				expectedFields := 1
+				if tc.action != "" {
+					expectedFields = 2
+				}
+				if len(command) != expectedFields || command["command"] != tc.command {
+					t.Errorf("unexpected job body: %s", body)
+				}
+				if tc.action == "" {
+					if _, present := command["action"]; present {
+						t.Errorf("job action sent without request: %s", body)
+					}
+				} else if command["action"] != tc.action {
+					t.Errorf("job action = %q, want %q", command["action"], tc.action)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			if err := tc.call(newTestClient(t, server.URL, 1024)); err != nil {
+				t.Fatalf("unexpected job command error: %v", err)
+			}
+			if requests.Load() != 1 {
+				t.Fatalf("job command sent %d requests", requests.Load())
+			}
+		})
+	}
+}
+
+func TestJobCommandsPreserveUpstreamConflicts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"start while job active", func(client *Client) error {
+			return client.StartJob(context.Background())
+		}},
+		{"pause while idle", func(client *Client) error {
+			return client.PauseJob(context.Background())
+		}},
+		{"resume while idle", func(client *Client) error {
+			return client.ResumeJob(context.Background())
+		}},
+		{"restart while not paused", func(client *Client) error {
+			return client.RestartJob(context.Background())
+		}},
+		{"cancel while idle", func(client *Client) error {
+			return client.CancelJob(context.Background())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprint(w, "upstream-secret-detail")
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusConflict {
+				t.Fatalf("missing conflict status: %v", err)
+			}
+			if strings.Contains(err.Error(), "upstream-secret-detail") {
+				t.Fatal("upstream detail leaked")
+			}
+		})
+	}
+}
+
+func TestJobCommandsReturnSafeErrorsWithoutUpstreamBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"start", func(client *Client) error {
+			return client.StartJob(context.Background())
+		}},
+		{"pause", func(client *Client) error {
+			return client.PauseJob(context.Background())
+		}},
+		{"resume", func(client *Client) error {
+			return client.ResumeJob(context.Background())
+		}},
+		{"restart", func(client *Client) error {
+			return client.RestartJob(context.Background())
+		}},
+		{"cancel", func(client *Client) error {
+			return client.CancelJob(context.Background())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			err := tc.call(newTestClient(t, server.URL, 1024))
+
+			assertKind(t, err, ErrorHTTPStatus)
+			var typed *Error
+			if !errors.As(err, &typed) || typed.StatusCode != http.StatusInternalServerError {
+				t.Fatalf("missing upstream status: %v", err)
+			}
+			if err.Error() != "octoprint: http_status" {
+				t.Fatalf("unsafe error: %v", err)
+			}
+		})
+	}
+}
+
 func TestPaddedAPIKeyIsRejectedBeforeRequest(t *testing.T) {
 	for _, key := range []string{" test-secret ", " test-secret", "test-secret ", "\ttest-secret\t"} {
 		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
