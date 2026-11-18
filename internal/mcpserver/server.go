@@ -21,12 +21,13 @@ type Reader interface {
 	Printer(ctx context.Context) (*octoprint.PrinterResponse, error)
 	Job(ctx context.Context) (*octoprint.JobResponse, error)
 	Files(ctx context.Context) (*octoprint.FilesResponse, error)
+	UploadGCode(ctx context.Context, filename string, contents []byte) (*octoprint.UploadResponse, error)
 }
 
 func NewServer(reader Reader) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: serverName, Version: serverVersion},
-		&mcp.ServerOptions{Instructions: "Read-only OctoPrint access. Every tool issues HTTP GET requests; no write operation is exposed."},
+		&mcp.ServerOptions{Instructions: "OctoPrint access provides read-only status tools and one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."},
 	)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:         "printer_get_status",
@@ -48,7 +49,27 @@ func NewServer(reader Reader) *mcp.Server {
 		Description:  "List the files and folders reported by OctoPrint.",
 		OutputSchema: filesOutputSchema,
 	}, filesHandler(reader))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:         "printer_upload_gcode",
+		Description:  "Upload a G-code file to OctoPrint local storage without selecting or printing it. Accepts a filename ending in .gcode and at most 8 MiB of contents.",
+		OutputSchema: uploadOutputSchema,
+	}, uploadHandler(reader))
 	return server
+}
+
+type uploadInput struct {
+	Filename string `json:"filename" jsonschema:"G-code filename ending in .gcode"`
+	Contents string `json:"contents" jsonschema:"G-code file contents, maximum 8 MiB"`
+}
+
+func uploadHandler(reader Reader) mcp.ToolHandlerFor[uploadInput, uploadOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input uploadInput) (*mcp.CallToolResult, uploadOutput, error) {
+		response, err := reader.UploadGCode(ctx, input.Filename, []byte(input.Contents))
+		if err != nil {
+			return nil, uploadOutput{}, toolError(err)
+		}
+		return nil, newUploadOutput(response), nil
+	}
 }
 
 func statusHandler(reader Reader) mcp.ToolHandlerFor[struct{}, statusOutput] {

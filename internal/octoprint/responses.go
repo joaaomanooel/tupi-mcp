@@ -97,6 +97,14 @@ type FilesResponse struct {
 	Files []FileInfo `json:"files"`
 }
 
+type UploadResponse struct {
+	File            *FileInfo            `json:"file"`
+	Files           map[string]*FileInfo `json:"files"`
+	Done            *bool                `json:"done"`
+	EffectiveSelect *bool                `json:"effectiveSelect"`
+	EffectivePrint  *bool                `json:"effectivePrint"`
+}
+
 type FileInfo struct {
 	Name     *string    `json:"name"`
 	Display  *string    `json:"display"`

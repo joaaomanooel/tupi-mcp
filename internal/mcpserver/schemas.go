@@ -117,3 +117,15 @@ var filesOutputSchema = json.RawMessage(`{
   "additionalProperties": false,
   "$defs": {` + fileSchemaDefinition + `}
 }`)
+
+var uploadOutputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "file": {"$ref": "#/$defs/file"},
+    "done": {"type": "boolean"},
+    "effectiveSelect": {"type": "boolean"},
+    "effectivePrint": {"type": "boolean"}
+  },
+  "additionalProperties": false,
+  "$defs": {` + fileSchemaDefinition + `}
+}`)
