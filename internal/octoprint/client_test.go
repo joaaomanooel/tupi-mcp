@@ -44,6 +44,87 @@ func TestApprovedReads(t *testing.T) {
 	}
 }
 
+func TestUploadGCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/files/local" || r.Header.Get("X-Api-Key") != "test-secret" {
+			t.Errorf("unexpected upload request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.ContentLength <= 0 || !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+			t.Errorf("upload request missing length or multipart content type")
+		}
+		if r.FormValue("select") != "false" || r.FormValue("print") != "false" || r.FormValue("noOverwrite") != "true" {
+			t.Errorf("upload flags select=%q print=%q noOverwrite=%q", r.FormValue("select"), r.FormValue("print"), r.FormValue("noOverwrite"))
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("upload file: %v", err)
+			return
+		}
+		defer file.Close()
+		contents, err := io.ReadAll(file)
+		if err != nil || header.Filename != "first.gcode" || string(contents) != "G28\nM84\n" {
+			t.Errorf("unexpected file %q: %q (%v)", header.Filename, contents, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"files":{"local":{"name":"first.gcode","path":"first.gcode","origin":"local"}},"done":true,"effectiveSelect":false,"effectivePrint":false}`)
+	}))
+	defer server.Close()
+
+	result, err := newTestClient(t, server.URL, 1024).UploadGCode(context.Background(), "first.gcode", []byte("G28\nM84\n"))
+	if err != nil || result == nil || result.Files["local"] == nil || result.EffectivePrint == nil || *result.EffectivePrint {
+		t.Fatalf("unexpected upload response: %+v %v", result, err)
+	}
+}
+
+func TestUploadGCodeReturnsSafeConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("noOverwrite") != "true" {
+			t.Error("upload did not request overwrite protection")
+		}
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, "existing-file-secret")
+	}))
+	defer server.Close()
+
+	_, err := newTestClient(t, server.URL, 1024).UploadGCode(context.Background(), "first.gcode", []byte("G28"))
+	assertKind(t, err, ErrorHTTPStatus)
+	var typed *Error
+	if !errors.As(err, &typed) || typed.StatusCode != http.StatusConflict || strings.Contains(err.Error(), "existing-file-secret") {
+		t.Fatalf("unexpected conflict error: %v", err)
+	}
+}
+
+func TestUploadGCodeRejectsInvalidInputWithoutRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); fmt.Fprint(w, `{}`) }))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 1024)
+
+	for _, filename := range []string{"", "first", ".gcode", ".GCODE", "..gcode", "../first.gcode", `..\\first.gcode`, "first.stl", " first.gcode", "first.gcode\n", strings.Repeat("a", 250) + ".gcode"} {
+		_, err := client.UploadGCode(context.Background(), filename, []byte("G28"))
+		assertKind(t, err, ErrorInvalidUpload)
+	}
+	_, err := client.UploadGCode(context.Background(), "first.gcode", nil)
+	assertKind(t, err, ErrorInvalidUpload)
+	_, err = client.UploadGCode(context.Background(), "first.gcode", []byte("G28\x00M84"))
+	assertKind(t, err, ErrorInvalidUpload)
+	_, err = client.UploadGCode(context.Background(), "first.gcode", make([]byte, MaxGCodeUploadBytes+1))
+	assertKind(t, err, ErrorRequestTooLarge)
+	if requests.Load() != 0 {
+		t.Fatalf("invalid input sent %d requests", requests.Load())
+	}
+}
+
+func TestUploadGCodeFilenameLengthBoundary(t *testing.T) {
+	if !validGCodeFilename(strings.Repeat("a", 249) + ".gcode") {
+		t.Error("255-byte filename rejected")
+	}
+	if validGCodeFilename(strings.Repeat("a", 250) + ".gcode") {
+		t.Error("256-byte filename accepted")
+	}
+}
+
 func TestConfigurationValidation(t *testing.T) {
 	for _, base := range []string{"", "localhost", "ftp://127.0.0.1", "http://", "http://user:pass@127.0.0.1", "http://127.0.0.1?x=1", "http://127.0.0.1#fragment", "http://127.0.0.1?", "http://127.0.0.1/#"} {
 		t.Run(base, func(t *testing.T) {

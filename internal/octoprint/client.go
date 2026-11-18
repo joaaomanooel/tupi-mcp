@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type ErrorKind string
@@ -23,7 +27,11 @@ const (
 	ErrorInvalidJSON       ErrorKind = "invalid_json"
 	ErrorResponseTooLarge  ErrorKind = "response_too_large"
 	ErrorSensitiveResponse ErrorKind = "sensitive_response"
+	ErrorInvalidUpload     ErrorKind = "invalid_upload"
+	ErrorRequestTooLarge   ErrorKind = "request_too_large"
 )
+
+const MaxGCodeUploadBytes = 8 << 20
 
 type Error struct {
 	Kind       ErrorKind
@@ -84,6 +92,80 @@ func (c *Client) Files(ctx context.Context) (*FilesResponse, error) {
 	return readResponse[FilesResponse](ctx, c, "/api/files")
 }
 
+func (c *Client) UploadGCode(ctx context.Context, filename string, contents []byte) (*UploadResponse, error) {
+	if !validGCodeFilename(filename) || len(contents) == 0 {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if len(contents) > MaxGCodeUploadBytes {
+		return nil, &Error{Kind: ErrorRequestTooLarge}
+	}
+	if !ValidGCodeContents(contents) {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	file, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if _, err := file.Write(contents); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if err := writer.WriteField("select", "false"); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if err := writer.WriteField("print", "false"); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if err := writer.WriteField("noOverwrite", "true"); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, &Error{Kind: ErrorInvalidUpload}
+	}
+
+	target := c.baseURL
+	target.Path = strings.TrimRight(target.Path, "/") + "/api/files/local"
+	target.RawPath = ""
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), &body)
+	if err != nil {
+		return nil, safeTransportError(ctx, err)
+	}
+	request.Header.Set("X-Api-Key", c.apiKey)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, safeTransportError(ctx, err)
+	}
+	responseBody, err := c.readResponse(ctx, response)
+	if err != nil {
+		return nil, err
+	}
+	var uploaded *UploadResponse
+	if err := json.Unmarshal(responseBody, &uploaded); err != nil || uploaded == nil || uploaded.File == nil && uploaded.Files["local"] == nil {
+		return nil, &Error{Kind: ErrorInvalidJSON}
+	}
+	return uploaded, nil
+}
+
+func ValidGCodeContents(contents []byte) bool {
+	for len(contents) > 0 {
+		character, size := utf8.DecodeRune(contents)
+		if character == utf8.RuneError && size == 1 || unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return false
+		}
+		contents = contents[size:]
+	}
+	return true
+}
+
+func validGCodeFilename(filename string) bool {
+	extension := path.Ext(filename)
+	basename := strings.TrimSuffix(filename, extension)
+	return filename != "" && len(filename) <= 255 && filename == strings.TrimSpace(filename) && !strings.ContainsAny(filename, "/\\") && !strings.ContainsFunc(filename, unicode.IsControl) && strings.EqualFold(extension, ".gcode") && basename != "" && basename != "." && basename != ".."
+}
+
 func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	target := c.baseURL
 	target.Path = strings.TrimRight(target.Path, "/") + endpoint
@@ -97,6 +179,10 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	if err != nil {
 		return nil, safeTransportError(ctx, err)
 	}
+	return c.readResponse(ctx, response)
+}
+
+func (c *Client) readResponse(ctx context.Context, response *http.Response) ([]byte, error) {
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, c.maxBodyBytes))

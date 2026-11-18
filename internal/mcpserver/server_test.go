@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/joaaomanooel/tupi-mcp/internal/config"
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
 )
 
@@ -100,6 +103,16 @@ type readerStub struct {
 	err error
 }
 
+type uploadRecorder struct {
+	readerStub
+	called bool
+}
+
+func (r *uploadRecorder) UploadGCode(context.Context, string, []byte) (*octoprint.UploadResponse, error) {
+	r.called = true
+	return &octoprint.UploadResponse{}, nil
+}
+
 func (r readerStub) Connection(context.Context) (*octoprint.ConnectionResponse, error) {
 	return &octoprint.ConnectionResponse{}, r.err
 }
@@ -114,6 +127,10 @@ func (r readerStub) Job(context.Context) (*octoprint.JobResponse, error) {
 
 func (r readerStub) Files(context.Context) (*octoprint.FilesResponse, error) {
 	return &octoprint.FilesResponse{}, r.err
+}
+
+func (r readerStub) UploadGCode(context.Context, string, []byte) (*octoprint.UploadResponse, error) {
+	return &octoprint.UploadResponse{}, r.err
 }
 
 type testServer struct {
@@ -180,7 +197,7 @@ func newIntegrationServer(t *testing.T) (*printerMock, testServer, *mcp.ClientSe
 	if err != nil {
 		t.Fatalf("octoprint client: %v", err)
 	}
-	setup := startMCPServer(t, client, nil, 64<<10)
+	setup := startMCPServer(t, client, nil, config.DefaultMaxRequestBodyBytes)
 	return mock, setup, connectSession(t, setup)
 }
 
@@ -231,7 +248,7 @@ func TestToolDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	expected := []string{"printer_get_status", "printer_get_temperatures", "printer_get_job", "printer_list_files"}
+	expected := []string{"printer_get_status", "printer_get_temperatures", "printer_get_job", "printer_list_files", "printer_upload_gcode"}
 	if len(result.Tools) != len(expected) {
 		t.Fatalf("tools = %d, want %d", len(result.Tools), len(expected))
 	}
@@ -244,8 +261,51 @@ func TestToolDiscovery(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing tool %s", name)
 		}
-		assertNoInputArguments(t, tool)
+		if name == "printer_upload_gcode" {
+			assertUploadInputSchema(t, tool)
+		} else {
+			assertNoInputArguments(t, tool)
+		}
 		assertOutputSchema(t, tool, name)
+	}
+}
+
+func assertUploadInputSchema(t *testing.T, tool *mcp.Tool) {
+	t.Helper()
+	var schema struct {
+		Properties           map[string]json.RawMessage `json:"properties"`
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Required             []string                   `json:"required"`
+	}
+	encoded, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal upload input schema: %v", err)
+	}
+	if err := json.Unmarshal(encoded, &schema); err != nil {
+		t.Fatalf("unmarshal upload input schema: %v", err)
+	}
+	if len(schema.Properties) != 2 || schema.Properties["filename"] == nil || schema.Properties["contents"] == nil {
+		t.Errorf("unexpected upload input schema: %s", encoded)
+	}
+	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+		t.Errorf("upload input schema allows undeclared arguments: %s", encoded)
+	}
+	sort.Strings(schema.Required)
+	if len(schema.Required) != 2 || schema.Required[0] != "contents" || schema.Required[1] != "filename" {
+		t.Errorf("upload input required = %v, want [filename contents]", schema.Required)
+	}
+}
+
+func TestUploadHandlerRejectsOversizeBeforeCallingReader(t *testing.T) {
+	reader := &uploadRecorder{}
+	handler := uploadHandler(reader)
+	contents := strings.Repeat("G28\n", octoprint.MaxGCodeUploadBytes/4) + "G"
+	_, _, err := handler(context.Background(), nil, uploadInput{Filename: "large.gcode", Contents: contents})
+	if err == nil || !strings.Contains(err.Error(), string(octoprint.ErrorRequestTooLarge)) {
+		t.Fatalf("unexpected oversized upload error: %v", err)
+	}
+	if reader.called {
+		t.Error("reader received an oversized upload")
 	}
 }
 
@@ -340,7 +400,36 @@ func TestToolInvocation(t *testing.T) {
 		t.Errorf("unexpected nested files: %+v", files.Files[1])
 	}
 
-	expected := []string{"GET /api/connection", "GET /api/printer", "GET /api/printer", "GET /api/job", "GET /api/files"}
+	mock.setRoute("/api/files/local", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("upload method = %s, want POST", r.Method)
+		}
+		if r.FormValue("select") != "false" || r.FormValue("print") != "false" || r.FormValue("noOverwrite") != "true" {
+			t.Errorf("upload flags select=%q print=%q noOverwrite=%q", r.FormValue("select"), r.FormValue("print"), r.FormValue("noOverwrite"))
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("upload file: %v", err)
+			return
+		}
+		defer file.Close()
+		content, err := io.ReadAll(file)
+		if err != nil || header.Filename != "safe.gcode" || string(content) != "G28\nM84\n" {
+			t.Errorf("unexpected uploaded file %q: %q (%v)", header.Filename, content, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"files":{"local":{"name":"safe.gcode","path":"safe.gcode","origin":"local"}},"done":true,"effectiveSelect":false,"effectivePrint":false}`)
+	})
+	uploadResult := decodeOutput[uploadOutput](t, callTool(t, session, "printer_upload_gcode", map[string]any{
+		"filename": "safe.gcode",
+		"contents": "G28\nM84\n",
+	}))
+	if uploadResult.File == nil || uploadResult.File.Name == nil || *uploadResult.File.Name != "safe.gcode" || uploadResult.EffectivePrint == nil || *uploadResult.EffectivePrint {
+		t.Errorf("unexpected upload result: %+v", uploadResult)
+	}
+
+	expected := []string{"GET /api/connection", "GET /api/printer", "GET /api/printer", "GET /api/job", "GET /api/files", "POST /api/files/local"}
 	requests := mock.recordedRequests()
 	if len(requests) != len(expected) {
 		t.Fatalf("requests = %v, want %v", requests, expected)
@@ -349,6 +438,39 @@ func TestToolInvocation(t *testing.T) {
 		if request != expected[index] {
 			t.Fatalf("requests = %v, want %v", requests, expected)
 		}
+	}
+}
+
+func TestUploadGCodeAtMaximumSize(t *testing.T) {
+	mock, _, session := newIntegrationServer(t)
+	mock.setRoute("/api/files/local", func(w http.ResponseWriter, r *http.Request) {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("upload file: %v", err)
+			return
+		}
+		defer file.Close()
+		written, err := io.Copy(io.Discard, file)
+		if err != nil || written != octoprint.MaxGCodeUploadBytes || header.Size != octoprint.MaxGCodeUploadBytes {
+			t.Errorf("uploaded size = %d, header size = %d, error = %v", written, header.Size, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"files":{"local":{"name":"large.gcode","path":"large.gcode","origin":"local"}},"done":true,"effectiveSelect":false,"effectivePrint":false}`)
+	})
+	contents := strings.Repeat("G28\n", octoprint.MaxGCodeUploadBytes/4) + strings.Repeat("G", octoprint.MaxGCodeUploadBytes%4)
+	result := callTool(t, session, "printer_upload_gcode", map[string]any{"filename": "large.gcode", "contents": contents})
+	if result == nil || result.IsError {
+		t.Fatalf("maximum-size upload failed: %s", contentText(result))
+	}
+	tooLargeSize := octoprint.MaxGCodeUploadBytes + 1
+	tooLarge := strings.Repeat("G28\n", tooLargeSize/4) + strings.Repeat("G", tooLargeSize%4)
+	rejected := callTool(t, session, "printer_upload_gcode", map[string]any{"filename": "large.gcode", "contents": tooLarge})
+	if rejected == nil || !rejected.IsError || !strings.Contains(contentText(rejected), string(octoprint.ErrorRequestTooLarge)) {
+		t.Fatalf("oversized upload was not rejected safely: %s", contentText(rejected))
+	}
+	if requests := mock.recordedRequests(); len(requests) != 1 {
+		t.Fatalf("oversized upload reached OctoPrint: %v", requests)
 	}
 }
 
@@ -465,7 +587,7 @@ func TestToolErrorsAreSafeAndServerKeepsServing(t *testing.T) {
 				t.Fatalf("expected repeated tool error, got %+v", failed)
 			}
 			listed, err := session.ListTools(context.Background(), nil)
-			if err != nil || len(listed.Tools) != 4 {
+			if err != nil || len(listed.Tools) != 5 {
 				t.Fatalf("server stopped serving after tool error: %v", err)
 			}
 

@@ -69,6 +69,13 @@ type filesOutput struct {
 	Files []fileOutput `json:"files"`
 }
 
+type uploadOutput struct {
+	File            *fileOutput `json:"file,omitempty"`
+	Done            *bool       `json:"done,omitempty"`
+	EffectiveSelect *bool       `json:"effectiveSelect,omitempty"`
+	EffectivePrint  *bool       `json:"effectivePrint,omitempty"`
+}
+
 type fileOutput struct {
 	Name     *string      `json:"name,omitempty"`
 	Display  *string      `json:"display,omitempty"`
@@ -187,6 +194,22 @@ func newFilesOutput(response *octoprint.FilesResponse) filesOutput {
 		files = newFileOutputs(response.Files)
 	}
 	return filesOutput{Files: files}
+}
+
+func newUploadOutput(response *octoprint.UploadResponse) uploadOutput {
+	if response == nil {
+		return uploadOutput{}
+	}
+	file := response.File
+	if file == nil {
+		file = response.Files["local"]
+	}
+	return uploadOutput{
+		File:            newFileOutput(file),
+		Done:            response.Done,
+		EffectiveSelect: response.EffectiveSelect,
+		EffectivePrint:  response.EffectivePrint,
+	}
 }
 
 func newFileOutputs(files []octoprint.FileInfo) []fileOutput {
