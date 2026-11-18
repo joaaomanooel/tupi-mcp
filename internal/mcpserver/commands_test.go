@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -265,6 +266,44 @@ func TestEnabledJobToolsArePublishedAndInvoked(t *testing.T) {
 	}
 	if !reflect.DeepEqual(payloads, expected) {
 		t.Fatalf("job payloads = %v, want %v", payloads, expected)
+	}
+}
+
+func TestConfiguredFileAndJobToolDescriptionsNameRequiredPermissions(t *testing.T) {
+	enabled := make([]string, 0, len(configurableTools))
+	for name := range configurableTools {
+		enabled = append(enabled, name)
+	}
+	_, _, session := newIntegrationServerWithTools(t, enabled...)
+
+	tools := listTools(t, session)
+	requiredPermissions := map[string]string{
+		ToolCreateFolder: "Requires the FILES_UPLOAD permission.",
+		ToolCopyFile:     "Requires the FILES_UPLOAD permission.",
+		ToolMoveFile:     "Requires the FILES_UPLOAD and FILES_DELETE permissions.",
+		ToolSelectFile:   "Requires the FILES_SELECT permission.",
+		ToolDeleteFile:   "Requires the FILES_DELETE permission.",
+		ToolSliceFile:    "Requires the SLICE permission.",
+		ToolStartJob:     "Requires the PRINT permission.",
+		ToolPauseJob:     "Requires the PRINT permission.",
+		ToolResumeJob:    "Requires the PRINT permission.",
+		ToolRestartJob:   "Requires the PRINT permission.",
+		ToolCancelJob:    "Requires the PRINT permission.",
+	}
+	if len(requiredPermissions) != len(enabled) {
+		t.Fatalf("expected permission clauses cover %d tools, want %d", len(requiredPermissions), len(enabled))
+	}
+	for name, clause := range requiredPermissions {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("configured tool %s was not published", name)
+		}
+		if !strings.HasSuffix(tool.Description, clause) {
+			t.Errorf("%s description %q does not end with %q", name, tool.Description, clause)
+		}
+		if clauses := strings.Count(tool.Description, "Requires the"); clauses != 1 {
+			t.Errorf("%s description %q has %d permission clauses, want 1", name, tool.Description, clauses)
+		}
 	}
 }
 
