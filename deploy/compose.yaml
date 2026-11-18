@@ -7,9 +7,9 @@ services:
     ports:
       - "127.0.0.1:5000:5000"
     devices:
-      - "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0:/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+      - "${TUPI_OCTOPRINT_SERIAL_DEVICE:?defina TUPI_OCTOPRINT_SERIAL_DEVICE no deploy/.env}:/dev/3d-printer"
     group_add:
-      - "20"
+      - "${TUPI_OCTOPRINT_SERIAL_GID:?defina TUPI_OCTOPRINT_SERIAL_GID no deploy/.env}"
     volumes:
       - octoprint-data:/octoprint
     networks:

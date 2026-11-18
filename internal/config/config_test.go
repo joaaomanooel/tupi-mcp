@@ -151,7 +151,7 @@ func TestLoadListener(t *testing.T) {
 		{"non loopback rejected", "0.0.0.0:8080", "", "", ListenAddressVariable},
 		{"non loopback host rejected", "192.168.1.20:8080", "false", "", ListenAddressVariable},
 		{"non loopback without hosts", "0.0.0.0:8080", "true", "", AllowedHostsVariable},
-		{"non loopback allowed", "0.0.0.0:8080", "true", "server.local:8080", ""},
+		{"non loopback allowed", "0.0.0.0:8080", "true", "mcp.example.test:8080", ""},
 		{"missing port", "127.0.0.1", "false", "", ListenAddressVariable},
 		{"invalid port", "127.0.0.1:abc", "false", "", ListenAddressVariable},
 		{"out of range port", "127.0.0.1:70000", "false", "", ListenAddressVariable},
