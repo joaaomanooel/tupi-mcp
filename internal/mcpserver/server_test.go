@@ -430,6 +430,51 @@ func TestToolInvocation(t *testing.T) {
 	}
 }
 
+func TestServerToolOmitsExplicitNullSafemode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		safemode string
+	}{
+		{
+			name: "null",
+			body: `{"version":"1.11.8","safemode":null}`,
+		},
+		{
+			name:     "false",
+			body:     `{"version":"1.11.8","safemode":false}`,
+			safemode: `false`,
+		},
+		{
+			name:     "string",
+			body:     `{"version":"1.11.8","safemode":"Safemode active"}`,
+			safemode: `"Safemode active"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, _, session := newIntegrationServer(t)
+			mock.setRoute("/api/server", jsonRoute(tc.body))
+
+			result := callTool(t, session, "printer_get_server", nil)
+			output := decodeOutput[map[string]json.RawMessage](t, result)
+
+			if version := string(output["version"]); version != `"1.11.8"` {
+				t.Errorf("version = %s, want 1.11.8", version)
+			}
+			safemode, present := output["safemode"]
+			if tc.safemode == "" {
+				if present {
+					t.Errorf("explicit null safemode was not omitted: %s", safemode)
+				}
+				return
+			}
+			if !present || string(safemode) != tc.safemode {
+				t.Errorf("safemode = %s, want %s", safemode, tc.safemode)
+			}
+		})
+	}
+}
+
 func TestUploadGCodeAtMaximumSize(t *testing.T) {
 	mock, _, session := newIntegrationServer(t)
 	mock.setRoute("/api/files/local", func(w http.ResponseWriter, r *http.Request) {
