@@ -14,6 +14,7 @@ const (
 	AllowedHostsVariable               = "TUPI_MCP_ALLOWED_HOSTS"
 	AllowedOriginsVariable             = "TUPI_MCP_ALLOWED_ORIGINS"
 	MaxRequestBytesVariable            = "TUPI_MCP_MAX_REQUEST_BODY_BYTES"
+	EnabledToolsVariable               = "TUPI_MCP_ENABLED_TOOLS"
 	OctoPrintURLVariable               = "TUPI_OCTOPRINT_BASE_URL"
 	OctoPrintAPIKeyVariable            = "TUPI_OCTOPRINT_API_KEY"
 	OctoPrintAllowInsecureHTTPVariable = "TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP"
@@ -39,6 +40,7 @@ type Config struct {
 	AllowedHosts               []string
 	AllowedOrigins             []string
 	MaxRequestBodyBytes        int64
+	EnabledTools               []string
 	OctoPrintBaseURL           string
 	OctoPrintAPIKey            string
 	OctoPrintAllowInsecureHTTP bool
@@ -58,6 +60,10 @@ func Load(lookup lookupFunc) (*Config, error) {
 		return nil, err
 	}
 	maxRequestBodyBytes, err := loadPositiveInt(lookup, MaxRequestBytesVariable, DefaultMaxRequestBodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	enabledTools, err := loadEnabledTools(lookup)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +92,7 @@ func Load(lookup lookupFunc) (*Config, error) {
 		AllowedHosts:               allowedHosts,
 		AllowedOrigins:             allowedOrigins,
 		MaxRequestBodyBytes:        maxRequestBodyBytes,
+		EnabledTools:               enabledTools,
 		OctoPrintBaseURL:           baseURL,
 		OctoPrintAPIKey:            apiKey,
 		OctoPrintAllowInsecureHTTP: allowInsecureHTTP,
@@ -149,6 +156,18 @@ func loadAllowedOrigins(lookup lookupFunc) ([]string, error) {
 	entries, ok := splitList(value)
 	if !ok {
 		return nil, &Error{Message: AllowedOriginsVariable + " must not contain empty entries"}
+	}
+	return entries, nil
+}
+
+func loadEnabledTools(lookup lookupFunc) ([]string, error) {
+	value, ok := lookup(EnabledToolsVariable)
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries, ok := splitList(value)
+	if !ok {
+		return nil, &Error{Message: EnabledToolsVariable + " must not contain empty entries"}
 	}
 	return entries, nil
 }

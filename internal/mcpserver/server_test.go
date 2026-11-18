@@ -139,13 +139,22 @@ type testServer struct {
 
 func startMCPServer(t *testing.T, reader Reader, origins []string, maxRequestBodyBytes int64) testServer {
 	t.Helper()
+	return startMCPServerWithTools(t, reader, nil, origins, maxRequestBodyBytes)
+}
+
+func startMCPServerWithTools(t *testing.T, reader Reader, enabledTools []string, origins []string, maxRequestBodyBytes int64) testServer {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	host := listener.Addr().String()
+	server, err := NewServer(reader, enabledTools)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	handler, err := NewHandler(Options{
-		Server:              NewServer(reader),
+		Server:              server,
 		AllowedHosts:        []string{host},
 		AllowedOrigins:      origins,
 		MaxRequestBodyBytes: maxRequestBodyBytes,
@@ -178,12 +187,17 @@ func connectSession(t *testing.T, setup testServer) *mcp.ClientSession {
 
 func newIntegrationServer(t *testing.T) (*printerMock, testServer, *mcp.ClientSession) {
 	t.Helper()
+	return newIntegrationServerWithTools(t)
+}
+
+func newIntegrationServerWithTools(t *testing.T, enabledTools ...string) (*printerMock, testServer, *mcp.ClientSession) {
+	t.Helper()
 	mock := newPrinterMock(t)
 	client, err := octoprint.NewClient(mock.server.URL, testAPIKey, &http.Client{Timeout: 2 * time.Second}, 4096, false)
 	if err != nil {
 		t.Fatalf("octoprint client: %v", err)
 	}
-	setup := startMCPServer(t, client, nil, config.DefaultMaxRequestBodyBytes)
+	setup := startMCPServerWithTools(t, client, enabledTools, nil, config.DefaultMaxRequestBodyBytes)
 	return mock, setup, connectSession(t, setup)
 }
 

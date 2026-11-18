@@ -41,6 +41,9 @@ func TestLoadDefaults(t *testing.T) {
 	if settings.MaxRequestBodyBytes != DefaultMaxRequestBodyBytes {
 		t.Errorf("request body limit = %d, want %d", settings.MaxRequestBodyBytes, DefaultMaxRequestBodyBytes)
 	}
+	if len(settings.EnabledTools) != 0 {
+		t.Errorf("enabled tools = %v, want none", settings.EnabledTools)
+	}
 	if settings.OctoPrintTimeout != DefaultOctoPrintTimeout {
 		t.Errorf("timeout = %v, want %v", settings.OctoPrintTimeout, DefaultOctoPrintTimeout)
 	}
@@ -61,6 +64,7 @@ func TestLoadOverrides(t *testing.T) {
 	values[OctoPrintTimeoutVariable] = "3s"
 	values[OctoPrintMaxResponseVariable] = "4096"
 	values[OctoPrintAllowInsecureHTTPVariable] = "true"
+	values[EnabledToolsVariable] = " printer_delete_file , printer_start_job "
 
 	settings, err := Load(lookupFrom(values))
 
@@ -86,6 +90,10 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if !settings.OctoPrintAllowInsecureHTTP {
 		t.Error("insecure HTTP = false, want true")
+	}
+	expectedTools := []string{"printer_delete_file", "printer_start_job"}
+	if !reflect.DeepEqual(settings.EnabledTools, expectedTools) {
+		t.Errorf("enabled tools = %v, want %v", settings.EnabledTools, expectedTools)
 	}
 }
 
@@ -185,6 +193,7 @@ func TestLoadInvalidLimits(t *testing.T) {
 		{"zero timeout", OctoPrintTimeoutVariable, "0s"},
 		{"negative timeout", OctoPrintTimeoutVariable, "-5s"},
 		{"empty origin entry", AllowedOriginsVariable, "https://client.example.com,,"},
+		{"empty tool entry", EnabledToolsVariable, "printer_start_job,,"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			values := validValues()
@@ -194,6 +203,17 @@ func TestLoadInvalidLimits(t *testing.T) {
 
 			assertConfigError(t, err, tc.variable)
 		})
+	}
+}
+
+func TestLoadEmptyEnabledTools(t *testing.T) {
+	values := validValues()
+	values[EnabledToolsVariable] = "   "
+
+	settings, err := Load(lookupFrom(values))
+
+	if err != nil || len(settings.EnabledTools) != 0 {
+		t.Fatalf("unexpected enabled tools: %v %v", settings.EnabledTools, err)
 	}
 }
 

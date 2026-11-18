@@ -150,7 +150,10 @@ func TestRequestBodyLimit(t *testing.T) {
 }
 
 func TestOptionsValidation(t *testing.T) {
-	server := NewServer(readerStub{})
+	server, err := NewServer(readerStub{}, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	for _, tc := range []struct {
 		name    string
 		options Options
@@ -178,8 +181,12 @@ func TestOptionsValidation(t *testing.T) {
 }
 
 func TestOptionsAcceptsExactAllowlists(t *testing.T) {
+	server, err := NewServer(readerStub{}, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	handler, err := NewHandler(Options{
-		Server:              NewServer(readerStub{}),
+		Server:              server,
 		AllowedHosts:        []string{"127.0.0.1:8080", "localhost:8080", "mcp.example.com", "[::1]"},
 		AllowedOrigins:      []string{"https://client.example.com"},
 		MaxRequestBodyBytes: 1024,

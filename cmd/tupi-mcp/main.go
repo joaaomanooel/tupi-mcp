@@ -55,7 +55,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 	defer listener.Close()
-	server := mcpserver.NewServer(client)
+	server, err := mcpserver.NewServer(client, settings.EnabledTools)
+	if err != nil {
+		return err
+	}
 	handler, err := mcpserver.NewHandler(mcpserver.Options{
 		Server:              server,
 		AllowedHosts:        settings.AllowedHosts,

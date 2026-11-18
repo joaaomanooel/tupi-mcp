@@ -37,6 +37,7 @@ services:
       TUPI_MCP_ALLOWED_HOSTS: "127.0.0.1:8080,localhost:8080"
       TUPI_OCTOPRINT_BASE_URL: "http://octoprint:5000"
       TUPI_OCTOPRINT_ALLOW_INSECURE_HTTP: "true"
+      TUPI_MCP_ENABLED_TOOLS: "${TUPI_MCP_ENABLED_TOOLS:-}"
     depends_on:
       - octoprint
     networks:
