@@ -9,49 +9,11 @@ import (
 
 const initializeBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`
 
-func TestAuthentication(t *testing.T) {
+func TestClientRequestsNeedNoCredential(t *testing.T) {
 	setup := startMCPServer(t, readerStub{}, nil, 64<<10)
-	for _, tc := range []struct {
-		name       string
-		mutate     func(*http.Request)
-		wantStatus int
-	}{
-		{name: "valid", mutate: func(*http.Request) {}, wantStatus: http.StatusOK},
-		{name: "lowercase scheme", mutate: func(r *http.Request) {
-			r.Header.Set("Authorization", "bearer "+testToken)
-		}, wantStatus: http.StatusOK},
-		{name: "missing", mutate: func(r *http.Request) {
-			r.Header.Del("Authorization")
-		}, wantStatus: http.StatusUnauthorized},
-		{name: "wrong token", mutate: func(r *http.Request) {
-			r.Header.Set("Authorization", bearerPrefix+"other-token")
-		}, wantStatus: http.StatusUnauthorized},
-		{name: "empty token", mutate: func(r *http.Request) {
-			r.Header.Set("Authorization", bearerPrefix)
-		}, wantStatus: http.StatusUnauthorized},
-		{name: "invalid scheme", mutate: func(r *http.Request) {
-			r.Header.Set("Authorization", "Basic "+testToken)
-		}, wantStatus: http.StatusUnauthorized},
-		{name: "padded token", mutate: func(r *http.Request) {
-			r.Header.Set("Authorization", bearerPrefix+" "+testToken)
-		}, wantStatus: http.StatusUnauthorized},
-		{name: "duplicate headers", mutate: func(r *http.Request) {
-			r.Header.Add("Authorization", bearerPrefix+testToken)
-		}, wantStatus: http.StatusUnauthorized},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			response := postInitialize(t, setup, tc.mutate)
-
-			if response.StatusCode != tc.wantStatus {
-				t.Fatalf("status = %d, want %d", response.StatusCode, tc.wantStatus)
-			}
-			if tc.wantStatus == http.StatusUnauthorized {
-				if got := response.Header.Get("WWW-Authenticate"); got != `Bearer realm="tupi-mcp"` {
-					t.Errorf("challenge = %q", got)
-				}
-				assertBodyDoesNotDisclose(t, response, testToken)
-			}
-		})
+	response := postInitialize(t, setup, func(*http.Request) {})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status without client credential = %d, want %d", response.StatusCode, http.StatusOK)
 	}
 }
 
@@ -151,9 +113,7 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 
 	for _, path := range []string{"/", "/mcp/", "/other"} {
 		t.Run(path, func(t *testing.T) {
-			response := get(t, setup, path, func(r *http.Request) {
-				r.Header.Set("Authorization", bearerPrefix+setup.token)
-			})
+			response := get(t, setup, path, func(*http.Request) {})
 
 			if response.StatusCode != http.StatusNotFound {
 				t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusNotFound)
@@ -162,13 +122,13 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 	}
 }
 
-func TestRequestRequiresAuthentication(t *testing.T) {
+func TestRequestWithoutCredentialReachesMCPHandler(t *testing.T) {
 	setup := startMCPServer(t, readerStub{}, nil, 64<<10)
 
-	response := get(t, setup, "/", func(*http.Request) {})
+	response := postInitialize(t, setup, func(*http.Request) {})
 
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
 	}
 }
 
@@ -179,7 +139,6 @@ func TestRequestBodyLimit(t *testing.T) {
 	response := post(t, setup, "/mcp", strings.NewReader(payload), func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Accept", "application/json, text/event-stream")
-		r.Header.Set("Authorization", bearerPrefix+setup.token)
 	})
 
 	if response.StatusCode != http.StatusRequestEntityTooLarge {
@@ -196,20 +155,17 @@ func TestOptionsValidation(t *testing.T) {
 		name    string
 		options Options
 	}{
-		{name: "missing server", options: Options{Token: testToken, AllowedHosts: []string{"127.0.0.1:8080"}, MaxRequestBodyBytes: 1024}},
-		{name: "missing token", options: Options{Server: server, AllowedHosts: []string{"127.0.0.1:8080"}, MaxRequestBodyBytes: 1024}},
-		{name: "short token", options: Options{Server: server, Token: "short-token", AllowedHosts: []string{"127.0.0.1:8080"}, MaxRequestBodyBytes: 1024}},
-		{name: "padded token", options: Options{Server: server, Token: " token", AllowedHosts: []string{"127.0.0.1:8080"}, MaxRequestBodyBytes: 1024}},
-		{name: "missing hosts", options: Options{Server: server, Token: testToken, MaxRequestBodyBytes: 1024}},
-		{name: "empty host", options: Options{Server: server, Token: testToken, AllowedHosts: []string{""}, MaxRequestBodyBytes: 1024}},
-		{name: "wildcard host", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"*.example.com"}, MaxRequestBodyBytes: 1024}},
-		{name: "host with scheme", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"https://example.com"}, MaxRequestBodyBytes: 1024}},
-		{name: "host with invalid port", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"example.com:0"}, MaxRequestBodyBytes: 1024}},
-		{name: "unbracketed ipv6", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"::1:8080"}, MaxRequestBodyBytes: 1024}},
-		{name: "wildcard origin", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"*"}, MaxRequestBodyBytes: 1024}},
-		{name: "origin with path", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"https://example.com/path"}, MaxRequestBodyBytes: 1024}},
-		{name: "origin without scheme", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"example.com"}, MaxRequestBodyBytes: 1024}},
-		{name: "missing body limit", options: Options{Server: server, Token: testToken, AllowedHosts: []string{"127.0.0.1:8080"}}},
+		{name: "missing server", options: Options{AllowedHosts: []string{"127.0.0.1:8080"}, MaxRequestBodyBytes: 1024}},
+		{name: "missing hosts", options: Options{Server: server, MaxRequestBodyBytes: 1024}},
+		{name: "empty host", options: Options{Server: server, AllowedHosts: []string{""}, MaxRequestBodyBytes: 1024}},
+		{name: "wildcard host", options: Options{Server: server, AllowedHosts: []string{"*.example.com"}, MaxRequestBodyBytes: 1024}},
+		{name: "host with scheme", options: Options{Server: server, AllowedHosts: []string{"https://example.com"}, MaxRequestBodyBytes: 1024}},
+		{name: "host with invalid port", options: Options{Server: server, AllowedHosts: []string{"example.com:0"}, MaxRequestBodyBytes: 1024}},
+		{name: "unbracketed ipv6", options: Options{Server: server, AllowedHosts: []string{"::1:8080"}, MaxRequestBodyBytes: 1024}},
+		{name: "wildcard origin", options: Options{Server: server, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"*"}, MaxRequestBodyBytes: 1024}},
+		{name: "origin with path", options: Options{Server: server, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"https://example.com/path"}, MaxRequestBodyBytes: 1024}},
+		{name: "origin without scheme", options: Options{Server: server, AllowedHosts: []string{"127.0.0.1:8080"}, AllowedOrigins: []string{"example.com"}, MaxRequestBodyBytes: 1024}},
+		{name: "missing body limit", options: Options{Server: server, AllowedHosts: []string{"127.0.0.1:8080"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			handler, err := NewHandler(tc.options)
@@ -224,7 +180,6 @@ func TestOptionsValidation(t *testing.T) {
 func TestOptionsAcceptsExactAllowlists(t *testing.T) {
 	handler, err := NewHandler(Options{
 		Server:              NewServer(readerStub{}),
-		Token:               testToken,
 		AllowedHosts:        []string{"127.0.0.1:8080", "localhost:8080", "mcp.example.com", "[::1]"},
 		AllowedOrigins:      []string{"https://client.example.com"},
 		MaxRequestBodyBytes: 1024,
@@ -272,7 +227,6 @@ func postInitialize(t *testing.T, setup testServer, mutate func(*http.Request)) 
 	return post(t, setup, "/mcp", strings.NewReader(initializeBody), func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Accept", "application/json, text/event-stream")
-		r.Header.Set("Authorization", bearerPrefix+setup.token)
 		if mutate != nil {
 			mutate(r)
 		}

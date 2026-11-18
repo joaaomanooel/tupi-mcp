@@ -1,8 +1,6 @@
 package mcpserver
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"io"
 	"net"
@@ -11,22 +9,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
-	"github.com/joaaomanooel/tupi-mcp/internal/security"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	bearerScheme       = "Bearer"
-	bearerPrefix       = bearerScheme + " "
 	sessionIdleTimeout = 15 * time.Minute
 	mcpPath            = "/mcp"
 )
 
 type Options struct {
 	Server              *mcp.Server
-	Token               string
 	AllowedHosts        []string
 	AllowedOrigins      []string
 	MaxRequestBodyBytes int64
@@ -52,7 +45,6 @@ func NewHandler(options Options) (http.Handler, error) {
 	return guard{
 		allowedHosts:   options.AllowedHosts,
 		allowedOrigins: origins,
-		tokenDigest:    sha256.Sum256([]byte(options.Token)),
 		next:           mux,
 	}, nil
 }
@@ -60,9 +52,6 @@ func NewHandler(options Options) (http.Handler, error) {
 func (o Options) validate() error {
 	if o.Server == nil {
 		return errors.New("mcpserver: MCP server is required")
-	}
-	if len(o.Token) < security.MinimumTokenLength || strings.IndexFunc(o.Token, unicode.IsSpace) >= 0 {
-		return errors.New("mcpserver: bearer token must contain at least " + strconv.Itoa(security.MinimumTokenLength) + " bytes and no whitespace")
 	}
 	if len(o.AllowedHosts) == 0 {
 		return errors.New("mcpserver: at least one allowed host is required")
@@ -132,18 +121,12 @@ func canonicalOrigins(values []string) ([]string, error) {
 type guard struct {
 	allowedHosts   []string
 	allowedOrigins []string
-	tokenDigest    [sha256.Size]byte
 	next           http.Handler
 }
 
 func (g guard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.hostAllowed(r) || !g.originAllowed(r) {
 		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	if !g.authorized(r) {
-		w.Header().Set("WWW-Authenticate", bearerScheme+` realm="tupi-mcp"`)
-		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	g.next.ServeHTTP(w, r)
@@ -179,23 +162,6 @@ func (g guard) originAllowed(r *http.Request) bool {
 		}
 	}
 	return false
-}
-
-func (g guard) authorized(r *http.Request) bool {
-	values := r.Header.Values("Authorization")
-	if len(values) != 1 {
-		return false
-	}
-	header := values[0]
-	if len(header) <= len(bearerPrefix) || !strings.EqualFold(header[:len(bearerPrefix)], bearerPrefix) {
-		return false
-	}
-	presented := header[len(bearerPrefix):]
-	if presented == "" || strings.ContainsAny(presented, " \t\r\n") {
-		return false
-	}
-	digest := sha256.Sum256([]byte(presented))
-	return subtle.ConstantTimeCompare(digest[:], g.tokenDigest[:]) == 1
 }
 
 func canonicalOrigin(value string) (string, bool) {
