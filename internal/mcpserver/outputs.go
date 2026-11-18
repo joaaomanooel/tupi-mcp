@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
@@ -371,7 +372,11 @@ func newServerOutput(response *octoprint.ServerResponse) serverOutput {
 	if response == nil {
 		return serverOutput{}
 	}
-	return serverOutput{Version: response.Version, Safemode: response.Safemode}
+	safemode := response.Safemode
+	if bytes.Equal(bytes.TrimSpace(safemode), []byte("null")) {
+		safemode = nil
+	}
+	return serverOutput{Version: response.Version, Safemode: safemode}
 }
 
 func newToolTemperaturesOutput(response *octoprint.ToolTemperaturesResponse) toolTemperaturesOutput {
