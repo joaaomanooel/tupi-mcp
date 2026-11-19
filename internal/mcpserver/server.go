@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/joaaomanooel/tupi-mcp/internal/config"
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
 )
 
@@ -38,18 +40,13 @@ type ExtendedReader interface {
 	Settings(ctx context.Context) (*octoprint.SettingsResponse, error)
 }
 
-func NewServer(reader Reader, enabledTools []string) (*mcp.Server, error) {
+func NewServer(reader Reader, enabledTools []string, physicalLimits config.PhysicalLimits) (*mcp.Server, error) {
 	enabled, err := enabledToolSet(enabledTools)
 	if err != nil {
 		return nil, err
 	}
-	instructions := "OctoPrint access provides read-only status and diagnostic tools plus one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."
-	if anyEnabled(enabled, fileTools...) {
-		instructions += " Enabled file-management tools operate on OctoPrint local storage and require the permissions stated in each tool description."
-	}
-	if anyEnabled(enabled, jobTools...) {
-		instructions += " Enabled job-control tools act on the current job and require the PRINT permission."
-	}
+	publishedPhysical := availablePhysicalTools(enabled, physicalLimits)
+	instructions := serverInstructions(enabled, publishedPhysical)
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: serverName, Version: serverVersion},
 		&mcp.ServerOptions{Instructions: instructions},
@@ -141,12 +138,72 @@ func NewServer(reader Reader, enabledTools []string) (*mcp.Server, error) {
 	} else if anyEnabled(enabled, fileTools...) {
 		return nil, errors.New("mcpserver: enabled file tools require a file manager")
 	}
-	if controller, ok := reader.(JobController); ok {
-		addJobTools(server, controller, enabled)
-	} else if anyEnabled(enabled, jobTools...) {
+	controller, hasJobController := reader.(JobController)
+	if !hasJobController && anyEnabled(enabled, jobTools...) {
 		return nil, errors.New("mcpserver: enabled job tools require a job controller")
 	}
+	var physicalCoordinator *PhysicalCoordinator
+	if len(publishedPhysical) > 0 {
+		physicalReader, readerOK := reader.(PhysicalReader)
+		writer, writerOK := reader.(PhysicalWriter)
+		if !readerOK || !writerOK {
+			return nil, errors.New("mcpserver: enabled physical tools require a physical reader and writer")
+		}
+		physicalCoordinator = NewPhysicalCoordinator(physicalReader, writer, physicalLimits)
+	}
+	if hasJobController {
+		addJobTools(server, controller, enabled, physicalCoordinator)
+	}
+	if physicalCoordinator != nil {
+		addPhysicalTools(server, physicalCoordinator, publishedPhysical)
+	}
 	return server, nil
+}
+
+func serverInstructions(enabled, publishedPhysical map[string]struct{}) string {
+	instructions := "OctoPrint access provides read-only status and diagnostic tools plus one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."
+	if anyEnabled(enabled, fileTools...) || anyEnabled(enabled, jobTools...) || len(publishedPhysical) > 0 {
+		instructions = "OctoPrint access provides status, temperature, job, file listing and diagnostic tools plus one bounded G-code upload tool. Uploads go to local storage with selection and printing disabled."
+	}
+	if anyEnabled(enabled, fileTools...) {
+		instructions += " Enabled file-management tools operate on OctoPrint local storage and require the permissions stated in each tool description."
+	}
+	if anyEnabled(enabled, jobTools...) {
+		instructions += " Enabled job-control tools act on the current job and require the PRINT permission."
+	}
+	if len(publishedPhysical) > 0 {
+		instructions += " Enabled physical controls cover " + publishedPhysicalControls(publishedPhysical) + " and require the permissions stated in each tool description. Every physical command re-reads printer state, enforces deployment limits, and reports only that OctoPrint accepted the request or that the outcome is unknown. OctoPrint acceptance does not confirm physical execution."
+	}
+	return instructions
+}
+
+var physicalControlCategories = []struct {
+	description string
+	tools       []string
+}{
+	{"connection", []string{ToolConnect, ToolReconnect, ToolDisconnect}},
+	{"printhead movement", []string{ToolJog, ToolHome}},
+	{"feedrate", []string{ToolSetFeedrate}},
+	{"heater targets and offsets", []string{ToolSetToolTemperature, ToolSetToolOffset, ToolSetBedTemperature, ToolSetBedOffset, ToolSetChamberTemperature, ToolSetChamberOffset}},
+	{"tool selection", []string{ToolSelectTool}},
+	{"extrusion", []string{ToolExtrude}},
+	{"SD operations", []string{ToolInitSD, ToolRefreshSD, ToolReleaseSD}},
+}
+
+func publishedPhysicalControls(published map[string]struct{}) string {
+	present := make([]string, 0, len(physicalControlCategories))
+	for _, category := range physicalControlCategories {
+		if anyEnabled(published, category.tools...) {
+			present = append(present, category.description)
+		}
+	}
+	if len(present) == 0 {
+		return "only the physical tools published in this session"
+	}
+	if len(present) == 1 {
+		return present[0]
+	}
+	return strings.Join(present[:len(present)-1], ", ") + " and " + present[len(present)-1]
 }
 
 type uploadInput struct {

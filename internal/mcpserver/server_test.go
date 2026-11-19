@@ -30,6 +30,10 @@ const (
 	printerBody    = `{"state":{"text":"Operational","flags":{"operational":true,"printing":false,"paused":false,"ready":true,"error":false,"closedOrError":false}},"temperature":{"bed":{"actual":21.5,"target":0},"tool0":{"actual":22.25,"target":200}}}`
 	jobBody        = `{"job":{"file":{"name":"cube.gcode","display":"cube","path":"cube.gcode","origin":"local","size":1024,"date":1700000000},"estimatedPrintTime":120.5},"progress":{"completion":50,"filepos":512,"printTime":60,"printTimeLeft":60.5,"printTimeLeftOrigin":"analysis"},"state":"Printing"}`
 	filesBody      = `{"files":[{"name":"cube.gcode","display":"cube","path":"cube.gcode","type":"machine","origin":"local","size":1024,"date":1700000000},{"name":"folder","type":"folder","children":[{"name":"inner.gcode","path":"folder/inner.gcode","type":"machine"}]}],"free":0,"total":8192}`
+
+	physicalJobBody     = `{"state":"Operational"}`
+	physicalProfileBody = `{"profiles":{"test":{"id":"test","name":"test","current":true,"heatedBed":true,"heatedChamber":true,"extruder":{"count":1}}}}`
+	physicalToolsBody   = `{"tool0":{"actual":210,"target":200}}`
 )
 
 type printerMock struct {
@@ -144,12 +148,17 @@ func startMCPServer(t *testing.T, reader Reader, origins []string, maxRequestBod
 
 func startMCPServerWithTools(t *testing.T, reader Reader, enabledTools []string, origins []string, maxRequestBodyBytes int64) testServer {
 	t.Helper()
+	return startMCPServerWithLimits(t, reader, enabledTools, config.PhysicalLimits{}, origins, maxRequestBodyBytes)
+}
+
+func startMCPServerWithLimits(t *testing.T, reader Reader, enabledTools []string, limits config.PhysicalLimits, origins []string, maxRequestBodyBytes int64) testServer {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	host := listener.Addr().String()
-	server, err := NewServer(reader, enabledTools)
+	server, err := NewServer(reader, enabledTools, limits)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -198,6 +207,25 @@ func newIntegrationServerWithTools(t *testing.T, enabledTools ...string) (*print
 		t.Fatalf("octoprint client: %v", err)
 	}
 	setup := startMCPServerWithTools(t, client, enabledTools, nil, config.DefaultMaxRequestBodyBytes)
+	return mock, setup, connectSession(t, setup)
+}
+
+func newPhysicalIntegrationServer(t *testing.T, enabledTools ...string) (*printerMock, testServer, *mcp.ClientSession) {
+	t.Helper()
+	return newIntegrationServerWithLimits(t, testPhysicalLimits(), enabledTools...)
+}
+
+func newIntegrationServerWithLimits(t *testing.T, limits config.PhysicalLimits, enabledTools ...string) (*printerMock, testServer, *mcp.ClientSession) {
+	t.Helper()
+	mock := newPrinterMock(t)
+	mock.setRoute("/api/job", jsonRoute(physicalJobBody))
+	mock.setRoute("/api/printerprofiles", jsonRoute(physicalProfileBody))
+	mock.setRoute("/api/printer/tool", jsonRoute(physicalToolsBody))
+	client, err := octoprint.NewClient(mock.server.URL, testAPIKey, &http.Client{Timeout: 2 * time.Second}, 4096, false)
+	if err != nil {
+		t.Fatalf("octoprint client: %v", err)
+	}
+	setup := startMCPServerWithLimits(t, client, enabledTools, limits, nil, config.DefaultMaxRequestBodyBytes)
 	return mock, setup, connectSession(t, setup)
 }
 
@@ -351,6 +379,12 @@ func assertOutputSchema(t *testing.T, tool *mcp.Tool, name string) {
 	if name == "printer_list_files" {
 		if len(schema.Required) != 1 || schema.Required[0] != "files" {
 			t.Errorf("files output schema required = %v, want [files]", schema.Required)
+		}
+		return
+	}
+	if isPhysicalTool(name) {
+		if len(schema.Required) != 1 || schema.Required[0] != "outcome" {
+			t.Errorf("%s output schema required = %v, want [outcome]", name, schema.Required)
 		}
 		return
 	}

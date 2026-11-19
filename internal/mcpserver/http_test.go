@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/joaaomanooel/tupi-mcp/internal/config"
 )
 
 const initializeBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`
@@ -123,8 +125,15 @@ func TestUnknownPathIsNotFound(t *testing.T) {
 }
 
 func TestRequestWithoutCredentialReachesMCPHandler(t *testing.T) {
-	setup := startMCPServer(t, readerStub{}, nil, 64<<10)
+	_, _, session := newPhysicalIntegrationServer(t, ToolReconnect)
 
+	result := callTool(t, session, ToolReconnect, nil)
+
+	if result == nil || result.IsError {
+		t.Fatalf("physical tool call without a bearer token failed: %s", contentText(result))
+	}
+
+	setup := startMCPServer(t, readerStub{}, nil, 64<<10)
 	response := postInitialize(t, setup, func(*http.Request) {})
 
 	if response.StatusCode != http.StatusOK {
@@ -150,7 +159,7 @@ func TestRequestBodyLimit(t *testing.T) {
 }
 
 func TestOptionsValidation(t *testing.T) {
-	server, err := NewServer(readerStub{}, nil)
+	server, err := NewServer(readerStub{}, nil, config.PhysicalLimits{})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -181,7 +190,7 @@ func TestOptionsValidation(t *testing.T) {
 }
 
 func TestOptionsAcceptsExactAllowlists(t *testing.T) {
-	server, err := NewServer(readerStub{}, nil)
+	server, err := NewServer(readerStub{}, nil, config.PhysicalLimits{})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

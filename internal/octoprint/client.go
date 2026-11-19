@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -30,9 +32,34 @@ const (
 	ErrorInvalidUpload     ErrorKind = "invalid_upload"
 	ErrorRequestTooLarge   ErrorKind = "request_too_large"
 	ErrorInvalidPath       ErrorKind = "invalid_path"
+	ErrorInvalidArgument   ErrorKind = "invalid_argument"
 )
 
-const MaxGCodeUploadBytes = 8 << 20
+const (
+	MaxGCodeUploadBytes = 8 << 20
+	minFeedrateFactor   = 50
+	maxFeedrateFactor   = 200
+)
+
+type PrintheadAxis string
+
+const (
+	PrintheadAxisX PrintheadAxis = "x"
+	PrintheadAxisY PrintheadAxis = "y"
+	PrintheadAxisZ PrintheadAxis = "z"
+)
+
+type PrintheadJog struct {
+	X     *float64 `json:"x,omitempty"`
+	Y     *float64 `json:"y,omitempty"`
+	Z     *float64 `json:"z,omitempty"`
+	Speed float64  `json:"speed"`
+}
+
+type Extrusion struct {
+	Amount float64 `json:"amount"`
+	Speed  float64 `json:"speed"`
+}
 
 type Error struct {
 	Kind       ErrorKind
@@ -146,6 +173,146 @@ func (c *Client) Timelapse(ctx context.Context) (*TimelapseResponse, error) {
 
 func (c *Client) Settings(ctx context.Context) (*SettingsResponse, error) {
 	return readResponse[SettingsResponse](ctx, c, "/api/settings")
+}
+
+func (c *Client) Connect(ctx context.Context) error {
+	return c.sendCommand(ctx, "/api/connection", struct {
+		Command string `json:"command"`
+	}{Command: "connect"})
+}
+
+func (c *Client) Disconnect(ctx context.Context) error {
+	return c.sendCommand(ctx, "/api/connection", struct {
+		Command string `json:"command"`
+	}{Command: "disconnect"})
+}
+
+func (c *Client) JogPrinthead(ctx context.Context, jog PrintheadJog) error {
+	if !validPrintheadJog(jog) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/printhead", struct {
+		Command string `json:"command"`
+		PrintheadJog
+	}{Command: "jog", PrintheadJog: jog})
+}
+
+func (c *Client) HomePrinthead(ctx context.Context, axes []PrintheadAxis) error {
+	if !validPrintheadAxes(axes) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/printhead", struct {
+		Command string          `json:"command"`
+		Axes    []PrintheadAxis `json:"axes"`
+	}{Command: "home", Axes: axes})
+}
+
+func (c *Client) SetFeedrate(ctx context.Context, factor int) error {
+	if factor < minFeedrateFactor || factor > maxFeedrateFactor {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/printhead", struct {
+		Command string `json:"command"`
+		Factor  int    `json:"factor"`
+	}{Command: "feedrate", Factor: factor})
+}
+
+func (c *Client) SetToolTargets(ctx context.Context, targets map[string]float64) error {
+	if !validToolTargets(targets) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/tool", struct {
+		Command string             `json:"command"`
+		Targets map[string]float64 `json:"targets"`
+	}{Command: "target", Targets: targets})
+}
+
+func (c *Client) SetToolOffsets(ctx context.Context, offsets map[string]float64) error {
+	if !validToolOffsets(offsets) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/tool", struct {
+		Command string             `json:"command"`
+		Offsets map[string]float64 `json:"offsets"`
+	}{Command: "offset", Offsets: offsets})
+}
+
+func (c *Client) SelectTool(ctx context.Context, tool string) error {
+	if !validToolName(tool) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/tool", struct {
+		Command string `json:"command"`
+		Tool    string `json:"tool"`
+	}{Command: "select", Tool: tool})
+}
+
+func (c *Client) Extrude(ctx context.Context, extrusion Extrusion) error {
+	if !finite(extrusion.Amount) || extrusion.Amount == 0 || !finite(extrusion.Speed) || extrusion.Speed <= 0 {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/tool", struct {
+		Command string `json:"command"`
+		Extrusion
+	}{Command: "extrude", Extrusion: extrusion})
+}
+
+func (c *Client) SetBedTarget(ctx context.Context, target float64) error {
+	if !validHeaterTarget(target) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/bed", struct {
+		Command string  `json:"command"`
+		Target  float64 `json:"target"`
+	}{Command: "target", Target: target})
+}
+
+func (c *Client) SetBedOffset(ctx context.Context, offset float64) error {
+	if !finite(offset) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/bed", struct {
+		Command string  `json:"command"`
+		Offset  float64 `json:"offset"`
+	}{Command: "offset", Offset: offset})
+}
+
+func (c *Client) SetChamberTarget(ctx context.Context, target float64) error {
+	if !validHeaterTarget(target) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/chamber", struct {
+		Command string  `json:"command"`
+		Target  float64 `json:"target"`
+	}{Command: "target", Target: target})
+}
+
+func (c *Client) SetChamberOffset(ctx context.Context, offset float64) error {
+	if !finite(offset) {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendCommand(ctx, "/api/printer/chamber", struct {
+		Command string  `json:"command"`
+		Offset  float64 `json:"offset"`
+	}{Command: "offset", Offset: offset})
+}
+
+func (c *Client) InitSD(ctx context.Context) error {
+	return c.sendSDCommand(ctx, "init")
+}
+
+func (c *Client) RefreshSD(ctx context.Context) error {
+	return c.sendSDCommand(ctx, "refresh")
+}
+
+func (c *Client) ReleaseSD(ctx context.Context) error {
+	return c.sendSDCommand(ctx, "release")
+}
+
+func (c *Client) sendSDCommand(ctx context.Context, command string) error {
+	return c.sendCommand(ctx, "/api/printer/sd", struct {
+		Command string `json:"command"`
+	}{Command: command})
 }
 
 func (c *Client) UploadGCode(ctx context.Context, filename string, contents []byte) (*UploadResponse, error) {
@@ -374,6 +541,81 @@ func validLocalPath(value string) bool {
 
 func validLocalName(name string) bool {
 	return name != "" && !strings.Contains(name, "/") && validLocalPath(name)
+}
+
+func validPrintheadJog(jog PrintheadJog) bool {
+	if jog.X == nil && jog.Y == nil && jog.Z == nil {
+		return false
+	}
+	for _, value := range []*float64{jog.X, jog.Y, jog.Z} {
+		if value != nil && !finite(*value) {
+			return false
+		}
+	}
+	return finite(jog.Speed) && jog.Speed > 0
+}
+
+func validPrintheadAxes(axes []PrintheadAxis) bool {
+	if len(axes) == 0 {
+		return false
+	}
+	seen := make(map[PrintheadAxis]bool, len(axes))
+	for _, axis := range axes {
+		if (axis != PrintheadAxisX && axis != PrintheadAxisY && axis != PrintheadAxisZ) || seen[axis] {
+			return false
+		}
+		seen[axis] = true
+	}
+	return true
+}
+
+func validToolName(name string) bool {
+	index, found := strings.CutPrefix(name, "tool")
+	if !found || index == "" {
+		return false
+	}
+	number, err := strconv.Atoi(index)
+	return err == nil && number >= 0 && "tool"+strconv.Itoa(number) == name
+}
+
+func validToolTargets(targets map[string]float64) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for name, target := range targets {
+		if (name != "tool" && !validToolName(name)) || !finite(target) || target < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func validToolOffsets(offsets map[string]float64) bool {
+	if len(offsets) == 0 {
+		return false
+	}
+	for name, offset := range offsets {
+		if !validToolName(name) || !finite(offset) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHeaterTarget(target float64) bool {
+	return finite(target) && target >= 0
+}
+
+func finite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func (c *Client) sendCommand(ctx context.Context, endpoint string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return &Error{Kind: ErrorInvalidArgument}
+	}
+	return c.sendNoContent(ctx, http.MethodPost, endpoint, body, "application/json")
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, body []byte, contentType string) ([]byte, error) {

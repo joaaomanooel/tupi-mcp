@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1264,6 +1266,344 @@ func TestJobCommandsReturnSafeErrorsWithoutUpstreamBody(t *testing.T) {
 				t.Fatalf("unsafe error: %v", err)
 			}
 		})
+	}
+}
+
+func TestPhysicalCommandsSendExactRequests(t *testing.T) {
+	x, y, z, speed := 10.0, -5.0, 0.2, 3000.0
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+		call func(*Client) error
+	}{
+		{"connect", "/api/connection", `{"command":"connect"}`, func(client *Client) error {
+			return client.Connect(context.Background())
+		}},
+		{"disconnect", "/api/connection", `{"command":"disconnect"}`, func(client *Client) error {
+			return client.Disconnect(context.Background())
+		}},
+		{"jog", "/api/printer/printhead", `{"command":"jog","x":10,"y":-5,"z":0.2,"speed":3000}`, func(client *Client) error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &x, Y: &y, Z: &z, Speed: speed})
+		}},
+		{"home", "/api/printer/printhead", `{"command":"home","axes":["x","z"]}`, func(client *Client) error {
+			return client.HomePrinthead(context.Background(), []PrintheadAxis{PrintheadAxisX, PrintheadAxisZ})
+		}},
+		{"feedrate", "/api/printer/printhead", `{"command":"feedrate","factor":105}`, func(client *Client) error {
+			return client.SetFeedrate(context.Background(), 105)
+		}},
+		{"tool targets", "/api/printer/tool", `{"command":"target","targets":{"tool0":210,"tool1":205}}`, func(client *Client) error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool0": 210, "tool1": 205})
+		}},
+		{"active tool target", "/api/printer/tool", `{"command":"target","targets":{"tool":210}}`, func(client *Client) error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool": 210})
+		}},
+		{"tool offsets", "/api/printer/tool", `{"command":"offset","offsets":{"tool0":-2}}`, func(client *Client) error {
+			return client.SetToolOffsets(context.Background(), map[string]float64{"tool0": -2})
+		}},
+		{"select tool", "/api/printer/tool", `{"command":"select","tool":"tool1"}`, func(client *Client) error {
+			return client.SelectTool(context.Background(), "tool1")
+		}},
+		{"extrude", "/api/printer/tool", `{"command":"extrude","amount":5,"speed":300}`, func(client *Client) error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 5, Speed: 300})
+		}},
+		{"retract", "/api/printer/tool", `{"command":"extrude","amount":-3,"speed":300}`, func(client *Client) error {
+			return client.Extrude(context.Background(), Extrusion{Amount: -3, Speed: 300})
+		}},
+		{"bed target", "/api/printer/bed", `{"command":"target","target":60}`, func(client *Client) error {
+			return client.SetBedTarget(context.Background(), 60)
+		}},
+		{"bed offset", "/api/printer/bed", `{"command":"offset","offset":-1.5}`, func(client *Client) error {
+			return client.SetBedOffset(context.Background(), -1.5)
+		}},
+		{"chamber target", "/api/printer/chamber", `{"command":"target","target":40}`, func(client *Client) error {
+			return client.SetChamberTarget(context.Background(), 40)
+		}},
+		{"chamber offset", "/api/printer/chamber", `{"command":"offset","offset":1.5}`, func(client *Client) error {
+			return client.SetChamberOffset(context.Background(), 1.5)
+		}},
+		{"sd init", "/api/printer/sd", `{"command":"init"}`, func(client *Client) error {
+			return client.InitSD(context.Background())
+		}},
+		{"sd refresh", "/api/printer/sd", `{"command":"refresh"}`, func(client *Client) error {
+			return client.RefreshSD(context.Background())
+		}},
+		{"sd release", "/api/printer/sd", `{"command":"release"}`, func(client *Client) error {
+			return client.ReleaseSD(context.Background())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var expected any
+			if err := json.Unmarshal([]byte(tc.body), &expected); err != nil {
+				t.Fatalf("invalid expected body: %v", err)
+			}
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != tc.path {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("X-Api-Key") != "test-secret" || r.URL.RawQuery != "" {
+					t.Error("unexpected credentials")
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("content type = %q", r.Header.Get("Content-Type"))
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+					return
+				}
+				var actual any
+				if err := json.Unmarshal(body, &actual); err != nil {
+					t.Errorf("invalid body: %s", body)
+					return
+				}
+				if !reflect.DeepEqual(actual, expected) {
+					t.Errorf("body = %s, want %s", body, tc.body)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			if err := tc.call(newTestClient(t, server.URL, 1024)); err != nil {
+				t.Fatalf("unexpected command error: %v", err)
+			}
+			if requests.Load() != 1 {
+				t.Fatalf("command sent %d requests", requests.Load())
+			}
+		})
+	}
+}
+
+func TestPhysicalCommandsPreserveUpstreamStatus(t *testing.T) {
+	for _, command := range physicalCommandCalls() {
+		for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusConflict} {
+			t.Run(fmt.Sprintf("%s/%d", command.name, status), func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					requests.Add(1)
+					w.WriteHeader(status)
+					fmt.Fprint(w, "upstream-secret-detail")
+				}))
+				defer server.Close()
+
+				err := command.call(newTestClient(t, server.URL, 1024))
+
+				assertKind(t, err, ErrorHTTPStatus)
+				var typed *Error
+				if !errors.As(err, &typed) || typed.StatusCode != status {
+					t.Fatalf("missing status %d: %v", status, err)
+				}
+				if errors.Unwrap(err) != nil || strings.Contains(err.Error(), "upstream-secret-detail") || strings.Contains(err.Error(), "test-secret") {
+					t.Fatalf("unsafe command error: %v", err)
+				}
+				if requests.Load() != 1 {
+					t.Fatalf("command sent %d requests", requests.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestPhysicalCommandsRejectInvalidInputWithoutRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL, 1024)
+
+	finiteValue, zeroValue, negativeValue := 1.0, 0.0, -1.0
+	nanValue, infiniteValue := math.NaN(), math.Inf(1)
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"jog without axes", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{Speed: 300})
+		}},
+		{"jog without speed", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &finiteValue})
+		}},
+		{"jog zero speed", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &finiteValue, Speed: zeroValue})
+		}},
+		{"jog negative speed", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &finiteValue, Speed: negativeValue})
+		}},
+		{"jog non-finite axis", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &nanValue, Speed: 300})
+		}},
+		{"jog non-finite speed", func() error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &finiteValue, Speed: infiniteValue})
+		}},
+		{"home without axes", func() error {
+			return client.HomePrinthead(context.Background(), nil)
+		}},
+		{"home invalid axis", func() error {
+			return client.HomePrinthead(context.Background(), []PrintheadAxis{"e"})
+		}},
+		{"home duplicate axis", func() error {
+			return client.HomePrinthead(context.Background(), []PrintheadAxis{PrintheadAxisX, PrintheadAxisX})
+		}},
+		{"feedrate below minimum", func() error {
+			return client.SetFeedrate(context.Background(), 49)
+		}},
+		{"feedrate above maximum", func() error {
+			return client.SetFeedrate(context.Background(), 201)
+		}},
+		{"tool targets empty", func() error {
+			return client.SetToolTargets(context.Background(), map[string]float64{})
+		}},
+		{"tool target leading zero", func() error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool01": 200})
+		}},
+		{"tool target negative index", func() error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool-1": 200})
+		}},
+		{"tool target non-finite", func() error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool0": nanValue})
+		}},
+		{"tool target negative", func() error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool0": -1})
+		}},
+		{"tool offsets empty", func() error {
+			return client.SetToolOffsets(context.Background(), map[string]float64{})
+		}},
+		{"tool offset invalid name", func() error {
+			return client.SetToolOffsets(context.Background(), map[string]float64{"extruder0": 1})
+		}},
+		{"tool offset non-finite", func() error {
+			return client.SetToolOffsets(context.Background(), map[string]float64{"tool0": infiniteValue})
+		}},
+		{"select tool without index", func() error {
+			return client.SelectTool(context.Background(), "tool")
+		}},
+		{"select tool negative index", func() error {
+			return client.SelectTool(context.Background(), "tool-1")
+		}},
+		{"extrude zero amount", func() error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 0, Speed: 300})
+		}},
+		{"extrude non-finite amount", func() error {
+			return client.Extrude(context.Background(), Extrusion{Amount: nanValue, Speed: 300})
+		}},
+		{"extrude zero speed", func() error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 5, Speed: 0})
+		}},
+		{"extrude negative speed", func() error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 5, Speed: -1})
+		}},
+		{"extrude non-finite speed", func() error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 5, Speed: infiniteValue})
+		}},
+		{"bed target negative", func() error {
+			return client.SetBedTarget(context.Background(), -1)
+		}},
+		{"bed target non-finite", func() error {
+			return client.SetBedTarget(context.Background(), nanValue)
+		}},
+		{"bed offset non-finite", func() error {
+			return client.SetBedOffset(context.Background(), infiniteValue)
+		}},
+		{"chamber target negative", func() error {
+			return client.SetChamberTarget(context.Background(), -1)
+		}},
+		{"chamber target non-finite", func() error {
+			return client.SetChamberTarget(context.Background(), infiniteValue)
+		}},
+		{"chamber offset non-finite", func() error {
+			return client.SetChamberOffset(context.Background(), nanValue)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertKind(t, tc.call(), ErrorInvalidArgument)
+		})
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("invalid input sent %d requests", requests.Load())
+	}
+}
+
+func TestPhysicalWriteTimeoutIsNotRetried(t *testing.T) {
+	var requests atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	client, err := NewClient(server.URL, "test-secret", &http.Client{Timeout: 30 * time.Millisecond}, 1024, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	x, speed := 1.0, 300.0
+	err = client.JogPrinthead(context.Background(), PrintheadJog{X: &x, Speed: speed})
+
+	assertKind(t, err, ErrorTimeout)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("missing deadline cause: %v", err)
+	}
+	var typed *Error
+	if !errors.As(err, &typed) || typed.StatusCode != 0 {
+		t.Fatalf("transport failure carried an HTTP status: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("timed out write sent %d requests", requests.Load())
+	}
+}
+
+func TestPhysicalCommandsAcceptSuccessStatusWithUnparsedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "unparsed upstream response")
+	}))
+	defer server.Close()
+
+	if err := newTestClient(t, server.URL, 1024).RefreshSD(context.Background()); err != nil {
+		t.Fatalf("unexpected success body error: %v", err)
+	}
+}
+
+func physicalCommandCalls() []struct {
+	name string
+	call func(*Client) error
+} {
+	x, speed := 1.0, 300.0
+	return []struct {
+		name string
+		call func(*Client) error
+	}{
+		{"connect", func(client *Client) error { return client.Connect(context.Background()) }},
+		{"disconnect", func(client *Client) error { return client.Disconnect(context.Background()) }},
+		{"jog", func(client *Client) error {
+			return client.JogPrinthead(context.Background(), PrintheadJog{X: &x, Speed: speed})
+		}},
+		{"home", func(client *Client) error {
+			return client.HomePrinthead(context.Background(), []PrintheadAxis{PrintheadAxisX})
+		}},
+		{"feedrate", func(client *Client) error { return client.SetFeedrate(context.Background(), 100) }},
+		{"tool targets", func(client *Client) error {
+			return client.SetToolTargets(context.Background(), map[string]float64{"tool0": 200})
+		}},
+		{"tool offsets", func(client *Client) error {
+			return client.SetToolOffsets(context.Background(), map[string]float64{"tool0": 1})
+		}},
+		{"select tool", func(client *Client) error { return client.SelectTool(context.Background(), "tool0") }},
+		{"extrude", func(client *Client) error {
+			return client.Extrude(context.Background(), Extrusion{Amount: 5, Speed: 300})
+		}},
+		{"bed target", func(client *Client) error { return client.SetBedTarget(context.Background(), 60) }},
+		{"bed offset", func(client *Client) error { return client.SetBedOffset(context.Background(), 1) }},
+		{"chamber target", func(client *Client) error { return client.SetChamberTarget(context.Background(), 40) }},
+		{"chamber offset", func(client *Client) error { return client.SetChamberOffset(context.Background(), 1) }},
+		{"sd init", func(client *Client) error { return client.InitSD(context.Background()) }},
+		{"sd refresh", func(client *Client) error { return client.RefreshSD(context.Background()) }},
+		{"sd release", func(client *Client) error { return client.ReleaseSD(context.Background()) }},
 	}
 }
 

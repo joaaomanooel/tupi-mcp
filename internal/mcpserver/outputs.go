@@ -96,6 +96,10 @@ type commandOutput struct {
 	Done *bool `json:"done,omitempty"`
 }
 
+type physicalCommandOutput struct {
+	Outcome PhysicalOutcome `json:"outcome"`
+}
+
 type fileOutput struct {
 	Name     *string      `json:"name,omitempty"`
 	Display  *string      `json:"display,omitempty"`

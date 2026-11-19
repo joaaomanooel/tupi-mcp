@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -239,5 +240,271 @@ func assertConfigError(t *testing.T, err error, variable string) {
 	}
 	if !strings.Contains(err.Error(), variable) {
 		t.Errorf("error %q does not mention %s", err, variable)
+	}
+}
+
+const (
+	validAxisLimitsJSON      = `{"travel":{"min":-100,"max":100},"speed":{"min":1,"max":6000}}`
+	validHeaterLimitsJSON    = `{"temperature":{"min":0,"max":250},"offset":{"min":-10,"max":10}}`
+	validExtrusionLimitsJSON = `{"length":{"min":-5,"max":50},"speed":{"min":60,"max":300},"minimumTemperature":180}`
+)
+
+func validPhysicalLimitsJSON(heaters string) string {
+	return `{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `},` +
+		`"heaters":{` + heaters + `},"extrusion":` + validExtrusionLimitsJSON + `}`
+}
+
+func TestLoadMissingPhysicalLimits(t *testing.T) {
+	settings, err := Load(lookupFrom(validValues()))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if settings.PhysicalLimits.Configured != (PhysicalDomains{}) {
+		t.Errorf("configured domains = %+v, want none", settings.PhysicalLimits.Configured)
+	}
+	if len(settings.PhysicalLimits.Axes) != 0 || len(settings.PhysicalLimits.Heaters) != 0 {
+		t.Errorf("physical limits = %+v, want none", settings.PhysicalLimits)
+	}
+	if settings.PhysicalLimits.Extrusion != (ExtrusionLimits{}) {
+		t.Errorf("extrusion limits = %+v, want none", settings.PhysicalLimits.Extrusion)
+	}
+	if len(settings.EnabledTools) != 0 {
+		t.Errorf("enabled tools = %v, want none", settings.EnabledTools)
+	}
+}
+
+func TestLoadPhysicalLimits(t *testing.T) {
+	values := validValues()
+	values[PhysicalLimitsVariable] = validPhysicalLimitsJSON(`"bed":` + validHeaterLimitsJSON + `,"tool0":` + validHeaterLimitsJSON)
+
+	settings, err := Load(lookupFrom(values))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedDomains := PhysicalDomains{Axes: true, Heaters: true, Extrusion: true}
+	if settings.PhysicalLimits.Configured != expectedDomains {
+		t.Errorf("configured domains = %+v, want %+v", settings.PhysicalLimits.Configured, expectedDomains)
+	}
+	if len(settings.PhysicalLimits.Axes) != len(physicalAxisNames) {
+		t.Fatalf("axes = %v, want %d entries", settings.PhysicalLimits.Axes, len(physicalAxisNames))
+	}
+	for _, name := range physicalAxisNames {
+		expectedAxis := AxisLimits{Travel: LimitRange{Min: -100, Max: 100}, Speed: LimitRange{Min: 1, Max: 6000}}
+		if settings.PhysicalLimits.Axes[name] != expectedAxis {
+			t.Errorf("axis %s = %+v, want %+v", name, settings.PhysicalLimits.Axes[name], expectedAxis)
+		}
+	}
+	expectedHeater := HeaterLimits{Temperature: LimitRange{Min: 0, Max: 250}, Offset: LimitRange{Min: -10, Max: 10}}
+	if len(settings.PhysicalLimits.Heaters) != 2 {
+		t.Fatalf("heaters = %v, want 2 entries", settings.PhysicalLimits.Heaters)
+	}
+	for _, name := range []string{"bed", "tool0"} {
+		if settings.PhysicalLimits.Heaters[name] != expectedHeater {
+			t.Errorf("heater %s = %+v, want %+v", name, settings.PhysicalLimits.Heaters[name], expectedHeater)
+		}
+	}
+	expectedExtrusion := ExtrusionLimits{
+		Length:             LimitRange{Min: -5, Max: 50},
+		Speed:              LimitRange{Min: 60, Max: 300},
+		MinimumTemperature: 180,
+	}
+	if settings.PhysicalLimits.Extrusion != expectedExtrusion {
+		t.Errorf("extrusion = %+v, want %+v", settings.PhysicalLimits.Extrusion, expectedExtrusion)
+	}
+	if len(settings.EnabledTools) != 0 {
+		t.Errorf("enabled tools = %v, want none", settings.EnabledTools)
+	}
+}
+
+func TestLoadPhysicalLimitsPartialDomains(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  PhysicalDomains
+	}{
+		{
+			"only axes",
+			`{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `}}`,
+			PhysicalDomains{Axes: true},
+		},
+		{
+			"axes missing one axis",
+			`{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `}}`,
+			PhysicalDomains{},
+		},
+		{
+			"empty axes",
+			`{"axes":{}}`,
+			PhysicalDomains{},
+		},
+		{
+			"only heaters",
+			`{"heaters":{"bed":` + validHeaterLimitsJSON + `}}`,
+			PhysicalDomains{Heaters: true},
+		},
+		{
+			"heater missing offset",
+			`{"heaters":{"bed":{"temperature":{"min":0,"max":250}}}}`,
+			PhysicalDomains{},
+		},
+		{
+			"empty heaters",
+			`{"heaters":{}}`,
+			PhysicalDomains{},
+		},
+		{
+			"only extrusion",
+			`{"extrusion":` + validExtrusionLimitsJSON + `}`,
+			PhysicalDomains{Extrusion: true},
+		},
+		{
+			"extrusion missing minimum temperature",
+			`{"extrusion":{"length":{"min":-5,"max":50},"speed":{"min":60,"max":300}}}`,
+			PhysicalDomains{},
+		},
+		{
+			"axes and heaters",
+			`{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `},` +
+				`"heaters":{"bed":` + validHeaterLimitsJSON + `}}`,
+			PhysicalDomains{Axes: true, Heaters: true},
+		},
+		{
+			"empty document",
+			`{}`,
+			PhysicalDomains{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := validValues()
+			values[PhysicalLimitsVariable] = tc.value
+
+			settings, err := Load(lookupFrom(values))
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if settings.PhysicalLimits.Configured != tc.want {
+				t.Errorf("configured domains = %+v, want %+v", settings.PhysicalLimits.Configured, tc.want)
+			}
+			if (len(settings.PhysicalLimits.Axes) > 0) != tc.want.Axes {
+				t.Errorf("axes = %v, want configured %v", settings.PhysicalLimits.Axes, tc.want.Axes)
+			}
+			if (len(settings.PhysicalLimits.Heaters) > 0) != tc.want.Heaters {
+				t.Errorf("heaters = %v, want configured %v", settings.PhysicalLimits.Heaters, tc.want.Heaters)
+			}
+			if (settings.PhysicalLimits.Extrusion != ExtrusionLimits{}) != tc.want.Extrusion {
+				t.Errorf("extrusion = %+v, want configured %v", settings.PhysicalLimits.Extrusion, tc.want.Extrusion)
+			}
+			if len(settings.EnabledTools) != 0 {
+				t.Errorf("enabled tools = %v, want none", settings.EnabledTools)
+			}
+		})
+	}
+}
+
+func TestLoadPhysicalLimitsInvalidDocumentDisablesAllDomains(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"malformed JSON", `{"axes":`},
+		{"unknown top level field", `{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `},` +
+			`"heaters":{"bed":` + validHeaterLimitsJSON + `},"extrusion":` + validExtrusionLimitsJSON + `,"extra":true}`},
+		{"trailing document", validPhysicalLimitsJSON(`"bed":`+validHeaterLimitsJSON) + `{}`},
+		{"array document", `[]`},
+		{"duplicate top level field", `{"axes":{},"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `}}`},
+		{"duplicate nested field", `{"axes":{"x":{"travel":{"min":-100,"min":-50,"max":100},"speed":{"min":1,"max":6000}},"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `}}`},
+		{"axes as list", `{"axes":[]}`},
+		{"number out of float range", `{"axes":{"x":{"travel":{"min":1e400,"max":1},"speed":{"min":1,"max":2}}}}`},
+		{"unknown axis field", `{"axes":{"x":{"travel":{"min":-1,"max":1},"speed":{"min":1,"max":2},"feedrate":1},` +
+			`"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := validValues()
+			values[PhysicalLimitsVariable] = tc.value
+
+			settings, err := Load(lookupFrom(values))
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if settings.PhysicalLimits.Configured != (PhysicalDomains{}) {
+				t.Errorf("configured domains = %+v, want none", settings.PhysicalLimits.Configured)
+			}
+			if len(settings.PhysicalLimits.Axes) != 0 || len(settings.PhysicalLimits.Heaters) != 0 {
+				t.Errorf("physical limits = %+v, want none", settings.PhysicalLimits)
+			}
+			if settings.OctoPrintBaseURL != "http://127.0.0.1:5000" {
+				t.Errorf("base URL = %q, want the configured value", settings.OctoPrintBaseURL)
+			}
+		})
+	}
+}
+
+func TestLoadPhysicalLimitsRejectsInvalidRanges(t *testing.T) {
+	axes := func(x, y, z string) string {
+		return `{"axes":{"x":` + x + `,"y":` + y + `,"z":` + z + `}}`
+	}
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"travel minimum above maximum", `{"axes":{"x":{"travel":{"min":100,"max":-100},"speed":{"min":1,"max":6000}},"y":` +
+			validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON + `}}`},
+		{"travel maximum not positive", axes(`{"travel":{"min":-100,"max":0},"speed":{"min":1,"max":6000}}`, validAxisLimitsJSON, validAxisLimitsJSON)},
+		{"missing travel", axes(`{"speed":{"min":1,"max":6000}}`, validAxisLimitsJSON, validAxisLimitsJSON)},
+		{"zero speed minimum", axes(`{"travel":{"min":-100,"max":100},"speed":{"min":0,"max":6000}}`, validAxisLimitsJSON, validAxisLimitsJSON)},
+		{"speed minimum above maximum", axes(`{"travel":{"min":-100,"max":100},"speed":{"min":6000,"max":1}}`, validAxisLimitsJSON, validAxisLimitsJSON)},
+		{"unknown axis name", `{"axes":{"x":` + validAxisLimitsJSON + `,"y":` + validAxisLimitsJSON + `,"z":` + validAxisLimitsJSON +
+			`,"e":` + validAxisLimitsJSON + `}}`},
+		{"negative temperature minimum", `{"heaters":{"bed":{"temperature":{"min":-1,"max":250},"offset":{"min":-5,"max":5}}}}`},
+		{"temperature maximum not positive", `{"heaters":{"bed":{"temperature":{"min":0,"max":0},"offset":{"min":-5,"max":5}}}}`},
+		{"offset minimum above maximum", `{"heaters":{"bed":{"temperature":{"min":0,"max":250},"offset":{"min":5,"max":-5}}}}`},
+		{"heater name with whitespace", `{"heaters":{" tool0":` + validHeaterLimitsJSON + `}}`},
+		{"extrusion length maximum not positive", `{"extrusion":{"length":{"min":-5,"max":0},"speed":{"min":60,"max":300},"minimumTemperature":180}}`},
+		{"extrusion length cannot retract", `{"extrusion":{"length":{"min":0,"max":50},"speed":{"min":60,"max":300},"minimumTemperature":180}}`},
+		{"zero extrusion speed minimum", `{"extrusion":{"length":{"min":-5,"max":50},"speed":{"min":0,"max":300},"minimumTemperature":180}}`},
+		{"zero extrusion minimum temperature", `{"extrusion":{"length":{"min":-5,"max":50},"speed":{"min":60,"max":300},"minimumTemperature":0}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := validValues()
+			values[PhysicalLimitsVariable] = tc.value
+
+			settings, err := Load(lookupFrom(values))
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if settings.PhysicalLimits.Configured != (PhysicalDomains{}) {
+				t.Errorf("configured domains = %+v, want none", settings.PhysicalLimits.Configured)
+			}
+			if len(settings.PhysicalLimits.Axes) != 0 || len(settings.PhysicalLimits.Heaters) != 0 {
+				t.Errorf("physical limits = %+v, want none", settings.PhysicalLimits)
+			}
+		})
+	}
+}
+
+func TestLimitRangeDocumentRejectsNonFiniteValues(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		minimum float64
+		maximum float64
+	}{
+		{"not a number", math.NaN(), 1},
+		{"positive infinity", 0, math.Inf(1)},
+		{"negative infinity", math.Inf(-1), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			document := &limitRangeDocument{Min: &tc.minimum, Max: &tc.maximum}
+
+			_, ok := document.valid()
+
+			if ok {
+				t.Fatalf("expected invalid range for min=%v max=%v", tc.minimum, tc.maximum)
+			}
+		})
 	}
 }

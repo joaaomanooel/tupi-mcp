@@ -70,6 +70,33 @@ func TestRunStopsAfterContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRunWarnsAboutPhysicalToolsWithoutLimits(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listener: %v", err)
+	}
+	defer listener.Close()
+
+	octoprint := httptest.NewServer(http.NotFoundHandler())
+	defer octoprint.Close()
+	setRunEnvironment(t, listener.Addr().String(), octoprint.URL)
+	t.Setenv("TUPI_MCP_ENABLED_TOOLS", "printer_jog")
+	t.Setenv("TUPI_MCP_PHYSICAL_LIMITS", `{"secret":"physical-secret"}`)
+
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	if err := run(context.Background(), logger); err == nil {
+		t.Fatal("expected bind error")
+	}
+	logged := output.String()
+	if !strings.Contains(logged, "physical tools are not published") || !strings.Contains(logged, "printer_jog") {
+		t.Fatalf("missing sanitized warning: %s", logged)
+	}
+	if strings.Contains(logged, "physical-secret") {
+		t.Fatalf("warning discloses the raw physical limits: %s", logged)
+	}
+}
+
 func setRunEnvironment(t *testing.T, address, octoprintURL string) {
 	t.Helper()
 	t.Setenv("TUPI_MCP_LISTEN_ADDRESS", address)
