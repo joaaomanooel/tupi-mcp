@@ -40,6 +40,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if missing := mcpserver.PhysicalToolsWithoutLimits(settings.EnabledTools, settings.PhysicalLimits); len(missing) > 0 {
+		logger.Warn("physical tools are not published because their deployment limits are missing or invalid", "tools", missing)
+	}
 	client, err := octoprint.NewClient(
 		settings.OctoPrintBaseURL,
 		settings.OctoPrintAPIKey,
@@ -55,7 +58,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 	defer listener.Close()
-	server, err := mcpserver.NewServer(client, settings.EnabledTools)
+	server, err := mcpserver.NewServer(client, settings.EnabledTools, settings.PhysicalLimits)
 	if err != nil {
 		return err
 	}

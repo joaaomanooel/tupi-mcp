@@ -160,6 +160,15 @@ var commandOutputSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
+var physicalCommandOutputSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "outcome": {"type": "string", "enum": ["accepted", "unknown"]}
+  },
+  "required": ["outcome"],
+  "additionalProperties": false
+}`)
+
 const temperatureSchemaDefinition = `"temperature": {
   "type": "object",
   "properties": {

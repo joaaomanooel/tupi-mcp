@@ -2,10 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/joaaomanooel/tupi-mcp/internal/config"
 	"github.com/joaaomanooel/tupi-mcp/internal/octoprint"
 )
 
@@ -21,6 +24,24 @@ const (
 	ToolResumeJob    = "printer_resume_job"
 	ToolRestartJob   = "printer_restart_job"
 	ToolCancelJob    = "printer_cancel_job"
+
+	ToolConnect               = "printer_connect"
+	ToolReconnect             = "printer_reconnect"
+	ToolDisconnect            = "printer_disconnect"
+	ToolJog                   = "printer_jog"
+	ToolHome                  = "printer_home"
+	ToolSetFeedrate           = "printer_set_feedrate"
+	ToolSetToolTemperature    = "printer_set_tool_temperature"
+	ToolSetToolOffset         = "printer_set_tool_offset"
+	ToolSelectTool            = "printer_select_tool"
+	ToolExtrude               = "printer_extrude"
+	ToolSetBedTemperature     = "printer_set_bed_temperature"
+	ToolSetBedOffset          = "printer_set_bed_offset"
+	ToolSetChamberTemperature = "printer_set_chamber_temperature"
+	ToolSetChamberOffset      = "printer_set_chamber_offset"
+	ToolInitSD                = "printer_init_sd"
+	ToolRefreshSD             = "printer_refresh_sd"
+	ToolReleaseSD             = "printer_release_sd"
 )
 
 var configurableTools = map[string]struct{}{
@@ -35,6 +56,24 @@ var configurableTools = map[string]struct{}{
 	ToolResumeJob:    {},
 	ToolRestartJob:   {},
 	ToolCancelJob:    {},
+
+	ToolConnect:               {},
+	ToolReconnect:             {},
+	ToolDisconnect:            {},
+	ToolJog:                   {},
+	ToolHome:                  {},
+	ToolSetFeedrate:           {},
+	ToolSetToolTemperature:    {},
+	ToolSetToolOffset:         {},
+	ToolSelectTool:            {},
+	ToolExtrude:               {},
+	ToolSetBedTemperature:     {},
+	ToolSetBedOffset:          {},
+	ToolSetChamberTemperature: {},
+	ToolSetChamberOffset:      {},
+	ToolInitSD:                {},
+	ToolRefreshSD:             {},
+	ToolReleaseSD:             {},
 }
 
 var fileTools = []string{
@@ -52,6 +91,90 @@ var jobTools = []string{
 	ToolResumeJob,
 	ToolRestartJob,
 	ToolCancelJob,
+}
+
+var physicalTools = []string{
+	ToolConnect,
+	ToolReconnect,
+	ToolDisconnect,
+	ToolJog,
+	ToolHome,
+	ToolSetFeedrate,
+	ToolSetToolTemperature,
+	ToolSetToolOffset,
+	ToolSelectTool,
+	ToolExtrude,
+	ToolSetBedTemperature,
+	ToolSetBedOffset,
+	ToolSetChamberTemperature,
+	ToolSetChamberOffset,
+	ToolInitSD,
+	ToolRefreshSD,
+	ToolReleaseSD,
+}
+
+func isPhysicalTool(name string) bool {
+	return slices.Contains(physicalTools, name)
+}
+
+func physicalToolAvailable(name string, limits config.PhysicalLimits) bool {
+	switch name {
+	case ToolConnect, ToolReconnect, ToolDisconnect, ToolSetFeedrate, ToolInitSD, ToolRefreshSD, ToolReleaseSD:
+		return true
+	case ToolJog, ToolHome:
+		return limits.Configured.Axes && len(limits.Axes) > 0
+	case ToolExtrude:
+		return limits.Configured.Extrusion
+	case ToolSetToolTemperature, ToolSetToolOffset, ToolSelectTool:
+		return limits.Configured.Heaters && hasToolHeater(limits)
+	case ToolSetBedTemperature, ToolSetBedOffset:
+		return limits.Configured.Heaters && hasHeater(limits, "bed")
+	case ToolSetChamberTemperature, ToolSetChamberOffset:
+		return limits.Configured.Heaters && hasHeater(limits, "chamber")
+	}
+	return false
+}
+
+func availablePhysicalTools(enabled map[string]struct{}, limits config.PhysicalLimits) map[string]struct{} {
+	available := make(map[string]struct{})
+	for _, name := range physicalTools {
+		if _, ok := enabled[name]; !ok {
+			continue
+		}
+		if !physicalToolAvailable(name, limits) {
+			continue
+		}
+		available[name] = struct{}{}
+	}
+	return available
+}
+
+func PhysicalToolsWithoutLimits(enabledTools []string, limits config.PhysicalLimits) []string {
+	var missing []string
+	for _, name := range enabledTools {
+		if !isPhysicalTool(name) {
+			continue
+		}
+		if physicalToolAvailable(name, limits) {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	return missing
+}
+
+func hasToolHeater(limits config.PhysicalLimits) bool {
+	for name := range limits.Heaters {
+		if _, ok := parseToolName(name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHeater(limits config.PhysicalLimits, name string) bool {
+	_, ok := limits.Heaters[name]
+	return ok
 }
 
 type FileManager interface {
@@ -177,6 +300,128 @@ func addJobTools(server *mcp.Server, controller JobController, enabled map[strin
 	}
 }
 
+func addPhysicalTools(server *mcp.Server, coordinator *PhysicalCoordinator, published map[string]struct{}) {
+	if _, ok := published[ToolConnect]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolConnect,
+			Description:  "Connect OctoPrint to the printer using the configured connection preferences. OctoPrint acceptance does not confirm a physical connection. Requires the CONNECTION permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.Connect))
+	}
+	if _, ok := published[ToolReconnect]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolReconnect,
+			Description:  "Reconnect OctoPrint to the printer using a single connect request and the configured connection preferences. OctoPrint acceptance does not confirm a physical connection. Requires the CONNECTION permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.Reconnect))
+	}
+	if _, ok := published[ToolDisconnect]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolDisconnect,
+			Description:  "Disconnect OctoPrint from the printer. OctoPrint acceptance does not confirm a physical disconnection. Requires the CONNECTION permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.Disconnect))
+	}
+	if _, ok := published[ToolJog]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolJog,
+			Description:  "Jog the printhead by a bounded offset on one or more axes at a bounded speed. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, jogHandler(coordinator))
+	}
+	if _, ok := published[ToolHome]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolHome,
+			Description:  "Home one or more printhead axes declared by the deployment limits. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, homeHandler(coordinator))
+	}
+	if _, ok := published[ToolSetFeedrate]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetFeedrate,
+			Description:  "Set the printhead feedrate factor between 50 and 200 percent. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setFeedrateHandler(coordinator))
+	}
+	if _, ok := published[ToolSetToolTemperature]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetToolTemperature,
+			Description:  "Set a tool target temperature within the configured limits; zero turns the heater off. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setToolTemperatureHandler(coordinator))
+	}
+	if _, ok := published[ToolSetToolOffset]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetToolOffset,
+			Description:  "Set a tool offset within the configured limits. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setToolOffsetHandler(coordinator))
+	}
+	if _, ok := published[ToolSelectTool]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSelectTool,
+			Description:  "Select a tool declared by the active printer profile and the configured limits. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, selectToolHandler(coordinator))
+	}
+	if _, ok := published[ToolExtrude]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolExtrude,
+			Description:  "Extrude or retract filament with a bounded amount and speed while every reported hotend is above the configured minimum temperature. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, extrudeHandler(coordinator))
+	}
+	if _, ok := published[ToolSetBedTemperature]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetBedTemperature,
+			Description:  "Set the bed target temperature within the configured limits; zero turns the heater off. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setBedTemperatureHandler(coordinator))
+	}
+	if _, ok := published[ToolSetBedOffset]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetBedOffset,
+			Description:  "Set the bed offset within the configured limits. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setBedOffsetHandler(coordinator))
+	}
+	if _, ok := published[ToolSetChamberTemperature]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetChamberTemperature,
+			Description:  "Set the chamber target temperature within the configured limits; zero turns the heater off. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setChamberTemperatureHandler(coordinator))
+	}
+	if _, ok := published[ToolSetChamberOffset]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolSetChamberOffset,
+			Description:  "Set the chamber offset within the configured limits. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, setChamberOffsetHandler(coordinator))
+	}
+	if _, ok := published[ToolInitSD]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolInitSD,
+			Description:  "Initialize the printer SD card. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.InitSD))
+	}
+	if _, ok := published[ToolRefreshSD]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolRefreshSD,
+			Description:  "Refresh the file list of the printer SD card. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.RefreshSD))
+	}
+	if _, ok := published[ToolReleaseSD]; ok {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         ToolReleaseSD,
+			Description:  "Release the printer SD card so the printer can access it. Requires the CONTROL permission.",
+			OutputSchema: physicalCommandOutputSchema,
+		}, physicalCommandHandler(coordinator.ReleaseSD))
+	}
+}
+
 type createFolderInput struct {
 	Name   string `json:"name" jsonschema:"Folder name without path separators"`
 	Parent string `json:"parent,omitempty" jsonschema:"Optional parent folder path inside local storage"`
@@ -261,4 +506,160 @@ func jobCommandHandler(run func(context.Context) error) mcp.ToolHandlerFor[struc
 		}
 		return nil, newCommandOutput(), nil
 	}
+}
+
+type jogInput struct {
+	X     *float64 `json:"x,omitempty" jsonschema:"Offset in millimeters on the x axis"`
+	Y     *float64 `json:"y,omitempty" jsonschema:"Offset in millimeters on the y axis"`
+	Z     *float64 `json:"z,omitempty" jsonschema:"Offset in millimeters on the z axis"`
+	Speed float64  `json:"speed" jsonschema:"Movement speed in millimeters per minute"`
+}
+
+type homeInput struct {
+	Axes []string `json:"axes" jsonschema:"Axes to home, one or more of x, y and z"`
+}
+
+type feedrateInput struct {
+	Factor int `json:"factor" jsonschema:"Feedrate percentage factor between 50 and 200"`
+}
+
+type toolTargetInput struct {
+	Tool   string  `json:"tool" jsonschema:"Tool name such as tool0"`
+	Target float64 `json:"target" jsonschema:"Target temperature in Celsius; zero turns the heater off"`
+}
+
+type toolOffsetInput struct {
+	Tool   string  `json:"tool" jsonschema:"Tool name such as tool0"`
+	Offset float64 `json:"offset" jsonschema:"Tool offset in millimeters"`
+}
+
+type toolSelectionInput struct {
+	Tool string `json:"tool" jsonschema:"Tool name such as tool0"`
+}
+
+type extrusionInput struct {
+	Amount float64 `json:"amount" jsonschema:"Extrusion amount in millimeters; negative values retract"`
+	Speed  float64 `json:"speed" jsonschema:"Extrusion speed in millimeters per minute"`
+}
+
+type heaterTargetInput struct {
+	Target float64 `json:"target" jsonschema:"Target temperature in Celsius; zero turns the heater off"`
+}
+
+type heaterOffsetInput struct {
+	Offset float64 `json:"offset" jsonschema:"Heater offset in millimeters"`
+}
+
+func physicalCommandHandler(action func(context.Context) (PhysicalOutcome, error)) mcp.ToolHandlerFor[struct{}, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(action(ctx))
+	}
+}
+
+func jogHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[jogInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input jogInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.Jog(ctx, octoprint.PrintheadJog{
+			X:     input.X,
+			Y:     input.Y,
+			Z:     input.Z,
+			Speed: input.Speed,
+		}))
+	}
+}
+
+func homeHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[homeInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input homeInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		axes, err := parseHomeAxes(input.Axes)
+		if err != nil {
+			return physicalResult("", err)
+		}
+		return physicalResult(coordinator.Home(ctx, axes))
+	}
+}
+
+func setFeedrateHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[feedrateInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input feedrateInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetFeedrate(ctx, input.Factor))
+	}
+}
+
+func setToolTemperatureHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[toolTargetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input toolTargetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetToolTarget(ctx, input.Tool, input.Target))
+	}
+}
+
+func setToolOffsetHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[toolOffsetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input toolOffsetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetToolOffset(ctx, input.Tool, input.Offset))
+	}
+}
+
+func selectToolHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[toolSelectionInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input toolSelectionInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SelectTool(ctx, input.Tool))
+	}
+}
+
+func extrudeHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[extrusionInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input extrusionInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.Extrude(ctx, input.Amount, input.Speed))
+	}
+}
+
+func setBedTemperatureHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[heaterTargetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input heaterTargetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetBedTarget(ctx, input.Target))
+	}
+}
+
+func setBedOffsetHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[heaterOffsetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input heaterOffsetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetBedOffset(ctx, input.Offset))
+	}
+}
+
+func setChamberTemperatureHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[heaterTargetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input heaterTargetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetChamberTarget(ctx, input.Target))
+	}
+}
+
+func setChamberOffsetHandler(coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[heaterOffsetInput, physicalCommandOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input heaterOffsetInput) (*mcp.CallToolResult, physicalCommandOutput, error) {
+		return physicalResult(coordinator.SetChamberOffset(ctx, input.Offset))
+	}
+}
+
+func parseHomeAxes(values []string) ([]octoprint.PrintheadAxis, error) {
+	axes := make([]octoprint.PrintheadAxis, 0, len(values))
+	for _, value := range values {
+		axis := octoprint.PrintheadAxis(value)
+		if axis != octoprint.PrintheadAxisX && axis != octoprint.PrintheadAxisY && axis != octoprint.PrintheadAxisZ {
+			return nil, physicalError(PhysicalErrorInvalidArgument)
+		}
+		axes = append(axes, axis)
+	}
+	return axes, nil
+}
+
+func physicalResult(outcome PhysicalOutcome, err error) (*mcp.CallToolResult, physicalCommandOutput, error) {
+	if err != nil {
+		if outcome == PhysicalUnknown {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: physicalError(PhysicalErrorUnknownResult).Error()}},
+			}, physicalCommandOutput{Outcome: PhysicalUnknown}, nil
+		}
+		return nil, physicalCommandOutput{}, physicalToolError(err)
+	}
+	return nil, physicalCommandOutput{Outcome: outcome}, nil
+}
+
+func physicalToolError(err error) error {
+	var operationError *PhysicalError
+	if errors.As(err, &operationError) {
+		return errors.New("physical: " + string(operationError.Kind))
+	}
+	return errors.New("physical: " + string(PhysicalErrorUnavailable))
 }
