@@ -37,6 +37,7 @@ const (
 	PhysicalErrorArgumentRejected  PhysicalErrorKind = "argument_rejected"
 	PhysicalErrorPermissionDenied  PhysicalErrorKind = "permission_denied"
 	PhysicalErrorResourceConflict  PhysicalErrorKind = "resource_conflict"
+	PhysicalErrorOperationBusy     PhysicalErrorKind = "operation_busy"
 	PhysicalErrorUnavailable       PhysicalErrorKind = "unavailable"
 	PhysicalErrorUnknownResult     PhysicalErrorKind = "unknown_result"
 )
@@ -85,6 +86,13 @@ type PhysicalCoordinator struct {
 
 func NewPhysicalCoordinator(reader PhysicalReader, writer PhysicalWriter, limits config.PhysicalLimits) *PhysicalCoordinator {
 	return &PhysicalCoordinator{reader: reader, writer: writer, limits: limits}
+}
+
+func (c *PhysicalCoordinator) tryReserve() (func(), bool) {
+	if !c.mutex.TryLock() {
+		return nil, false
+	}
+	return c.mutex.Unlock, true
 }
 
 var (

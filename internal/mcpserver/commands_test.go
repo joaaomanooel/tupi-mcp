@@ -9,7 +9,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -302,6 +304,9 @@ func TestConfiguredFileAndJobToolDescriptionsNameRequiredPermissions(t *testing.
 		}
 		if clauses := strings.Count(tool.Description, "Requires the"); clauses != 1 {
 			t.Errorf("%s description %q has %d permission clauses, want 1", name, tool.Description, clauses)
+		}
+		if slices.Contains([]string{ToolStartJob, ToolResumeJob, ToolRestartJob}, name) && strings.Contains(tool.Description, "physical: operation_busy") {
+			t.Errorf("%s description %q advertises unavailable physical coordination", name, tool.Description)
 		}
 	}
 }
@@ -912,5 +917,143 @@ func TestNewServerValidatesEnabledTools(t *testing.T) {
 	}
 	if _, err := NewServer(readerStub{}, []string{ToolJog}, config.PhysicalLimits{}); err != nil {
 		t.Fatalf("physical tool without limits should be withheld instead of rejected: %v", err)
+	}
+}
+
+func TestJobCommandRejectsBusyPhysicalCoordinator(t *testing.T) {
+	coordinator := &PhysicalCoordinator{}
+	release, reserved := coordinator.tryReserve()
+	if !reserved {
+		t.Fatal("failed to reserve physical coordinator")
+	}
+	defer release()
+	called := false
+	handler := jobCommandHandler(func(context.Context) error {
+		called = true
+		return nil
+	}, coordinator)
+
+	_, _, err := handler(context.Background(), nil, struct{}{})
+
+	if err == nil || err.Error() != "physical: operation_busy" {
+		t.Fatalf("busy error = %v, want physical: operation_busy", err)
+	}
+	if called {
+		t.Fatal("job command reached OctoPrint while the physical coordinator was busy")
+	}
+}
+
+func TestJobCommandRejectsCanceledContextBeforeOctoPrint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	handler := jobCommandHandler(func(context.Context) error {
+		called = true
+		return nil
+	}, nil)
+
+	_, _, err := handler(ctx, nil, struct{}{})
+
+	if err == nil {
+		t.Fatal("canceled job command did not return an error")
+	}
+	if called {
+		t.Fatal("canceled job command reached OctoPrint")
+	}
+}
+
+func TestJobCommandsCoordinateWithPhysicalOperations(t *testing.T) {
+	mock, setup, physicalSession := newIntegrationServerWithLimits(t, testPhysicalLimits(), ToolSetBedTemperature, ToolStartJob, ToolResumeJob, ToolRestartJob, ToolPauseJob, ToolCancelJob)
+	jobSession := connectSession(t, setup)
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseWrite) }) }
+	defer release()
+	mock.setRoute("/api/printer/bed", func(w http.ResponseWriter, r *http.Request) {
+		close(writeStarted)
+		select {
+		case <-releaseWrite:
+			w.WriteHeader(http.StatusNoContent)
+		case <-r.Context().Done():
+			w.WriteHeader(http.StatusGatewayTimeout)
+		}
+	})
+	jobCommands := make(chan string, 2)
+	mock.setRoute("/api/job", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, physicalJobBody)
+			return
+		}
+		var payload struct {
+			Command string `json:"command"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode job command: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		jobCommands <- payload.Command
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	physicalDone := make(chan error, 1)
+	physicalContext, cancelPhysical := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelPhysical()
+	go func() {
+		_, err := physicalSession.CallTool(physicalContext, &mcp.CallToolParams{Name: ToolSetBedTemperature, Arguments: map[string]any{"target": 50}})
+		physicalDone <- err
+	}()
+	select {
+	case <-writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("physical write did not reach OctoPrint")
+	}
+
+	for _, tool := range []string{ToolStartJob, ToolResumeJob, ToolRestartJob} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		result, err := jobSession.CallTool(ctx, &mcp.CallToolParams{Name: tool})
+		cancel()
+		if err != nil {
+			t.Fatalf("%s call: %v", tool, err)
+		}
+		if result == nil || !result.IsError || contentText(result) != "physical: operation_busy" {
+			t.Fatalf("%s result = %+v, want physical: operation_busy", tool, result)
+		}
+	}
+	select {
+	case command := <-jobCommands:
+		t.Fatalf("start job reached OctoPrint during physical write as %q", command)
+	default:
+	}
+
+	for _, tool := range []string{ToolPauseJob, ToolCancelJob} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		result, err := jobSession.CallTool(ctx, &mcp.CallToolParams{Name: tool})
+		cancel()
+		if err != nil {
+			t.Fatalf("%s call: %v", tool, err)
+		}
+		if result == nil || result.IsError {
+			t.Fatalf("%s result = %+v, want success while physical write is in progress", tool, result)
+		}
+		select {
+		case command := <-jobCommands:
+			if tool == ToolPauseJob && command != "pause" || tool == ToolCancelJob && command != "cancel" {
+				t.Fatalf("%s reached OctoPrint as command %q", tool, command)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not reach OctoPrint while physical write was in progress", tool)
+		}
+	}
+
+	release()
+	select {
+	case err := <-physicalDone:
+		if err != nil {
+			t.Fatalf("physical write: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("physical operation did not finish after releasing OctoPrint")
 	}
 }

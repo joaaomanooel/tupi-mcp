@@ -138,18 +138,24 @@ func NewServer(reader Reader, enabledTools []string, physicalLimits config.Physi
 	} else if anyEnabled(enabled, fileTools...) {
 		return nil, errors.New("mcpserver: enabled file tools require a file manager")
 	}
-	if controller, ok := reader.(JobController); ok {
-		addJobTools(server, controller, enabled)
-	} else if anyEnabled(enabled, jobTools...) {
+	controller, hasJobController := reader.(JobController)
+	if !hasJobController && anyEnabled(enabled, jobTools...) {
 		return nil, errors.New("mcpserver: enabled job tools require a job controller")
 	}
+	var physicalCoordinator *PhysicalCoordinator
 	if len(publishedPhysical) > 0 {
 		physicalReader, readerOK := reader.(PhysicalReader)
 		writer, writerOK := reader.(PhysicalWriter)
 		if !readerOK || !writerOK {
 			return nil, errors.New("mcpserver: enabled physical tools require a physical reader and writer")
 		}
-		addPhysicalTools(server, NewPhysicalCoordinator(physicalReader, writer, physicalLimits), publishedPhysical)
+		physicalCoordinator = NewPhysicalCoordinator(physicalReader, writer, physicalLimits)
+	}
+	if hasJobController {
+		addJobTools(server, controller, enabled, physicalCoordinator)
+	}
+	if physicalCoordinator != nil {
+		addPhysicalTools(server, physicalCoordinator, publishedPhysical)
 	}
 	return server, nil
 }

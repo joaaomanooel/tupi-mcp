@@ -262,41 +262,45 @@ func addFileTools(server *mcp.Server, manager FileManager, enabled map[string]st
 	}
 }
 
-func addJobTools(server *mcp.Server, controller JobController, enabled map[string]struct{}) {
+func addJobTools(server *mcp.Server, controller JobController, enabled map[string]struct{}, coordinator *PhysicalCoordinator) {
+	operationBusyDescription := ""
+	if coordinator != nil {
+		operationBusyDescription = " Returns physical: operation_busy during a physical operation; retry after it completes."
+	}
 	if _, ok := enabled[ToolStartJob]; ok {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         ToolStartJob,
-			Description:  "Start the selected OctoPrint job. OctoPrint arbitrates the job state. Requires the PRINT permission.",
+			Description:  "Start the selected OctoPrint job. OctoPrint arbitrates the job state." + operationBusyDescription + " Requires the PRINT permission.",
 			OutputSchema: commandOutputSchema,
-		}, jobCommandHandler(controller.StartJob))
+		}, jobCommandHandler(controller.StartJob, coordinator))
 	}
 	if _, ok := enabled[ToolPauseJob]; ok {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         ToolPauseJob,
 			Description:  "Pause the running OctoPrint job. OctoPrint arbitrates the job state. Requires the PRINT permission.",
 			OutputSchema: commandOutputSchema,
-		}, jobCommandHandler(controller.PauseJob))
+		}, jobCommandHandler(controller.PauseJob, nil))
 	}
 	if _, ok := enabled[ToolResumeJob]; ok {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         ToolResumeJob,
-			Description:  "Resume the paused OctoPrint job. OctoPrint arbitrates the job state. Requires the PRINT permission.",
+			Description:  "Resume the paused OctoPrint job. OctoPrint arbitrates the job state." + operationBusyDescription + " Requires the PRINT permission.",
 			OutputSchema: commandOutputSchema,
-		}, jobCommandHandler(controller.ResumeJob))
+		}, jobCommandHandler(controller.ResumeJob, coordinator))
 	}
 	if _, ok := enabled[ToolRestartJob]; ok {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         ToolRestartJob,
-			Description:  "Restart the current OctoPrint job. OctoPrint arbitrates the job state. Requires the PRINT permission.",
+			Description:  "Restart the current OctoPrint job. OctoPrint arbitrates the job state." + operationBusyDescription + " Requires the PRINT permission.",
 			OutputSchema: commandOutputSchema,
-		}, jobCommandHandler(controller.RestartJob))
+		}, jobCommandHandler(controller.RestartJob, coordinator))
 	}
 	if _, ok := enabled[ToolCancelJob]; ok {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         ToolCancelJob,
 			Description:  "Cancel the current OctoPrint job. OctoPrint arbitrates the job state. Requires the PRINT permission.",
 			OutputSchema: commandOutputSchema,
-		}, jobCommandHandler(controller.CancelJob))
+		}, jobCommandHandler(controller.CancelJob, nil))
 	}
 }
 
@@ -499,8 +503,21 @@ func sliceFileHandler(manager FileManager) mcp.ToolHandlerFor[sliceFileInput, fi
 	}
 }
 
-func jobCommandHandler(run func(context.Context) error) mcp.ToolHandlerFor[struct{}, commandOutput] {
+func jobCommandHandler(run func(context.Context) error, coordinator *PhysicalCoordinator) mcp.ToolHandlerFor[struct{}, commandOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, commandOutput, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, commandOutput{}, toolError(err)
+		}
+		if coordinator != nil {
+			release, reserved := coordinator.tryReserve()
+			if !reserved {
+				return nil, commandOutput{}, physicalError(PhysicalErrorOperationBusy)
+			}
+			defer release()
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, commandOutput{}, toolError(err)
+		}
 		if err := run(ctx); err != nil {
 			return nil, commandOutput{}, toolError(err)
 		}
