@@ -21,7 +21,7 @@ services:
         max-file: "3"
 
   tupi-mcp:
-    image: "ghcr.io/joaaomanooel/tupi-mcp:v0.1.0"
+    image: "ghcr.io/joaaomanooel/tupi-mcp:v0.4.3"
     restart: unless-stopped
     read_only: true
     cap_drop:
